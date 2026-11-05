@@ -1,3 +1,8 @@
+# github.com/jezek/xgb v1.3.1
+## explicit; go 1.11
+github.com/jezek/xgb
+github.com/jezek/xgb/shape
+github.com/jezek/xgb/xproto
 # github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 ## explicit; go 1.21
 github.com/santhosh-tekuri/jsonschema/v6

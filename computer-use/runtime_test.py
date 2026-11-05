@@ -11,6 +11,7 @@ from runtime_tests.test_action_notes import *  # noqa: F401,F403
 from runtime_tests.test_post_action_window import *  # noqa: F401,F403
 from runtime_tests.test_gui import *  # noqa: F401,F403
 from runtime_tests.test_gui_capture import *  # noqa: F401,F403
+from runtime_tests.test_compositor_capture import *  # noqa: F401,F403
 from runtime_tests.test_gui_input import *  # noqa: F401,F403
 from runtime_tests.test_protocol import *  # noqa: F401,F403
 from runtime_tests.test_inventory_resolver import *  # noqa: F401,F403
@@ -31,6 +32,7 @@ from runtime_tests.test_a11y_enable import *  # noqa: F401,F403
 from runtime_tests.test_popup_rendering import *  # noqa: F401,F403
 from runtime_tests.test_native_windows import *  # noqa: F401,F403
 from runtime_tests.test_window_geometry import *  # noqa: F401,F403
+from runtime_tests.test_cursor import *  # noqa: F401,F403
 
 
 if __name__ == "__main__":

@@ -352,10 +352,19 @@ def _collect_action_errors(items, convert):
 
 
 def validate_gui_actions(actions, bounds=None, native_bounds=None):
-    return _collect_action_errors(
+    validated, errors = _collect_action_errors(
         actions,
         lambda action: validate_gui_action(action, bounds, native_bounds),
     )
+    if len(actions) > 1:
+        for index, action in enumerate(actions):
+            if isinstance(action, dict) and action.get("type") == "screenshot":
+                errors.append({
+                    "index": index,
+                    "type": "screenshot",
+                    "error": "gui screenshot must be the only action in the call",
+                })
+    return validated, errors
 
 
 def gui_actions_to_screen(validated, bounds, native_bounds=None):

@@ -23,6 +23,7 @@ import runtime as runtime_entrypoint  # noqa: E402
 
 from native.linux.provider import (  # noqa: E402
     a11y_enable,
+    cursor,
     actionability,
     action_evidence,
     app_resolver,
@@ -49,6 +50,7 @@ from native.linux.provider import (  # noqa: E402
     node_geometry,
     node_visibility,
     node_facts,
+    compositor_capture,
     gui_capture,
     gui_dispatch,
     gui_input,
@@ -73,6 +75,7 @@ from native.linux.provider import (  # noqa: E402
 )
 
 PROVIDER_MODULES = (
+    cursor,
     foundation,
     node_geometry,
     node_visibility,
@@ -91,6 +94,7 @@ PROVIDER_MODULES = (
     snapshot_children,
     focus_probe,
     ax_virtual_table,
+    compositor_capture,
     gui_capture,
     gui_dispatch,
     snapshot,

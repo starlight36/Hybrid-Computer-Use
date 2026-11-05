@@ -384,54 +384,56 @@ def _perform_ax_action(
         moved_note,
     )
 
-    if operation_kind == "window_action":
-        windowless_response = _perform_window_action(
-            action_intent, app, window, element_record, notes, action_evidence
-        )
-        if windowless_response is not None:
-            return windowless_response
-    elif action_intent == "click":
-        element_record = _perform_click(
-            action_input,
-            window,
-            bounds,
-            element,
-            element_record,
-            notes,
-            action_evidence,
-        )
-    elif action_intent == "scroll":
-        element_record = _perform_scroll(
-            action_input,
-            window,
-            bounds,
-            element,
-            element_record,
-            notes,
-            action_evidence,
-        )
-    elif action_intent == "type":
-        _perform_type(
-            action_input, window, element, element_record, notes, action_evidence
-        )
-    elif action_intent == "keypress":
-        _perform_keypress(
-            action_input, window, element, element_record, notes, action_evidence
-        )
-    elif action_intent == "set_value":
-        _perform_set_value(
-            action_input, window, element, element_record, notes, action_evidence
-        )
-    elif action_intent == "select":
-        to_element = _resolve_select_end(app, operation, action_input, window, bounds)
-        perform_select(
-            action_input, window, element, element_record, to_element,
-            notes, action_evidence,
-        )
-    else:
-        raise RuntimeError(
-            'unsupportedProviderAction("{}")'.format(action_intent)
-        )
+    from . import cursor
+    with cursor.action(element_record, bounds):
+        if operation_kind == "window_action":
+            windowless_response = _perform_window_action(
+                action_intent, app, window, element_record, notes, action_evidence
+            )
+            if windowless_response is not None:
+                return windowless_response
+        elif action_intent == "click":
+            element_record = _perform_click(
+                action_input,
+                window,
+                bounds,
+                element,
+                element_record,
+                notes,
+                action_evidence,
+            )
+        elif action_intent == "scroll":
+            element_record = _perform_scroll(
+                action_input,
+                window,
+                bounds,
+                element,
+                element_record,
+                notes,
+                action_evidence,
+            )
+        elif action_intent == "type":
+            _perform_type(
+                action_input, window, element, element_record, notes, action_evidence
+            )
+        elif action_intent == "keypress":
+            _perform_keypress(
+                action_input, window, element, element_record, notes, action_evidence
+            )
+        elif action_intent == "set_value":
+            _perform_set_value(
+                action_input, window, element, element_record, notes, action_evidence
+            )
+        elif action_intent == "select":
+            to_element = _resolve_select_end(app, operation, action_input, window, bounds)
+            perform_select(
+                action_input, window, element, element_record, to_element,
+                notes, action_evidence,
+            )
+        else:
+            raise RuntimeError(
+                'unsupportedProviderAction("{}")'.format(action_intent)
+            )
 
     lap("action")
     # The input may have opened or closed native windows. Reads after this

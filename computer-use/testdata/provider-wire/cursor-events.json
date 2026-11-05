@@ -1,0 +1,17 @@
+{
+  "events": [
+    {"schema_version": 1, "kind": "move", "x": 640, "y": 360},
+    {"schema_version": 1, "kind": "press", "x": 640, "y": 360},
+    {"schema_version": 1, "kind": "release", "x": 640, "y": 360},
+    {"schema_version": 1, "kind": "target", "x": 220, "y": 140, "rect": [200, 120, 40, 40]},
+    {"schema_version": 1, "kind": "end", "x": 220, "y": 140},
+    {"schema_version": 1, "kind": "error", "x": 220, "y": 140},
+    {"schema_version": 1, "kind": "capture_begin", "sequence": 1},
+    {"schema_version": 1, "kind": "capture_end", "sequence": 1},
+    {"schema_version": 1, "kind": "capture_identity", "sequence": 2}
+  ],
+  "acknowledgement": {"schema_version": 1, "sequence": 1, "ok": true},
+  "identity_acknowledgement": {"schema_version": 1, "sequence": 2, "ok": true, "session": "000102030405060708090a0b0c0d0e0f"},
+  "failed_acknowledgement": {"schema_version": 1, "sequence": 1, "ok": false},
+  "failed_capture_requires_provider_reset": true
+}

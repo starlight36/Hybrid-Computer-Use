@@ -292,6 +292,7 @@ def _execute_validated(request):
 
 
 def _execute(request):
+    from . import cursor
     operation = request["operation"]
     payload_key = {
         "observe_apps": "observe_apps",
@@ -315,7 +316,7 @@ def _execute(request):
         return provider_response(
             request,
             response,
-            provider_reset_required=exc.provider_reset_required,
+            provider_reset_required=exc.provider_reset_required or cursor.reset_required(),
         )
     except Exception as exc:
         _write_operator_exception(request, "dispatch")
@@ -332,7 +333,7 @@ def _execute(request):
             response,
             provider_reset_required=True,
         )
-    return provider_response(request, response)
+    return provider_response(request, response, provider_reset_required=cursor.reset_required())
 
 
 def _execute_serialized_request(raw):

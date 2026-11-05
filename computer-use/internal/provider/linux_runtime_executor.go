@@ -50,6 +50,7 @@ type linuxProviderWorker struct {
 	stderrDone chan struct{}
 	stopOnce   sync.Once
 	waitErr    error
+	cursor     *linuxCursorOverlay
 }
 
 type linuxProviderReadResult struct {
@@ -227,7 +228,28 @@ func startLinuxProviderWorker(
 	}
 
 	cmd := exec.Command(linuxProviderPythonBinary(), scriptPath, "--stdio")
-	cmd.Env = environment
+	// The cursor descriptor belongs to this worker, never to an inherited
+	// shell or another MCP process.
+	cmd.Env = make([]string, 0, len(environment)+1)
+	for _, entry := range environment {
+		if !strings.HasPrefix(entry, "COMPUTER_USE_CURSOR_FD=") {
+			cmd.Env = append(cmd.Env, entry)
+		}
+	}
+	cursor, cursorFile, cursorErr := startLinuxCursorOverlay(environment)
+	if cursorErr != nil {
+		writeLinuxProviderProcessDiagnostic("cursor overlay disabled: " + cursorErr.Error())
+	}
+	if cursor != nil {
+		defer func() {
+			if cleanup {
+				cursor.close()
+			}
+		}()
+		defer cursorFile.Close()
+		cmd.ExtraFiles = []*os.File{cursorFile}
+		cmd.Env = append(cmd.Env, "COMPUTER_USE_CURSOR_FD=3")
+	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -251,6 +273,7 @@ func startLinuxProviderWorker(
 		tempDir:    tempDir,
 		done:       make(chan struct{}),
 		stderrDone: make(chan struct{}),
+		cursor:     cursor,
 	}
 	cleanup = false
 	go worker.forwardStderr(stderr)
@@ -262,6 +285,7 @@ func (worker *linuxProviderWorker) wait() {
 	if worker.cmd != nil {
 		worker.waitErr = worker.cmd.Wait()
 	}
+	worker.cursor.shutdown()
 	close(worker.done)
 }
 

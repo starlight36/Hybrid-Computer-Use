@@ -1,6 +1,7 @@
 """Low-level Linux focus and input emission primitives."""
 
 import subprocess
+from . import cursor
 import time
 from .foundation import (
     Atspi,
@@ -219,11 +220,13 @@ def require_input_emission(result, description, events_emitted=False):
 
 def emit_mouse_event(x, y, event, events_emitted=False):
     result = Atspi.generate_mouse_event(int(round(x)), int(round(y)), event)
-    return require_input_emission(
+    emitted = require_input_emission(
         result,
         "mouse event {!r}".format(event),
         events_emitted,
     )
+    cursor.pointer(x, y, event)
+    return emitted
 
 
 def emit_keyboard_event(
@@ -239,6 +242,9 @@ def emit_keyboard_event(
 
 def best_effort_mouse_release(x, y, event):
     try:
-        return Atspi.generate_mouse_event(int(round(x)), int(round(y)), event) is not False
+        emitted = Atspi.generate_mouse_event(int(round(x)), int(round(y)), event) is not False
+        if emitted:
+            cursor.pointer(x, y, event)
+        return emitted
     except Exception:
         return False

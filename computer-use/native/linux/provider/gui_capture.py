@@ -2,6 +2,10 @@
 
 import base64
 import math
+import os
+
+from .compositor_capture import grab_rgb
+from .cursor import clean_capture, compositor_session
 from .foundation import (
     Gdk,
     GdkPixbuf,
@@ -13,6 +17,27 @@ from .foundation import (
     PIXEL_DIFF_THRESHOLD,
     SCREENSHOT_MAX_BASE64_CHARS,
 )
+
+
+def _capture_pixbuf(bounds):
+    x, y, width, height = (
+        int(round(bounds["x"])), int(round(bounds["y"])),
+        max(1, int(round(bounds["width"]))), max(1, int(round(bounds["height"]))),
+    )
+    screen = Gdk.Screen.get_default()
+    if screen is None:
+        return None
+    root = screen.get_root_window()
+    endpoint = os.environ.get("HCU_CLEAN_CAPTURE_SOCKET")
+    if endpoint:
+        from gi.repository import GLib
+        session = compositor_session()
+        rgb = grab_rgb(endpoint, x, y, width, height, session)
+        return GdkPixbuf.Pixbuf.new_from_bytes(
+            GLib.Bytes.new(rgb), GdkPixbuf.Colorspace.RGB, False, 8, width, height, width * 3)
+
+    with clean_capture():
+        return Gdk.pixbuf_get_from_window(root, x, y, width, height)
 
 
 def capture_window_pixels(bounds):
@@ -32,13 +57,7 @@ def capture_window_pixels(bounds):
     if Gdk is None or bounds is None:
         return None
     try:
-        screen = Gdk.Screen.get_default()
-        if screen is None:
-            return None
-        pixbuf = Gdk.pixbuf_get_from_window(
-            screen.get_root_window(),
-            int(round(bounds["x"])), int(round(bounds["y"])),
-            max(1, int(round(bounds["width"]))), max(1, int(round(bounds["height"]))))
+        pixbuf = _capture_pixbuf(bounds)
         if pixbuf is None:
             return None
         return {
@@ -331,16 +350,7 @@ def capture_gui_pixels(bounds):
     if Gdk is None or GdkPixbuf is None or bounds is None:
         return None
     try:
-        screen = Gdk.Screen.get_default()
-        if screen is None:
-            return None
-        pixbuf = Gdk.pixbuf_get_from_window(
-            screen.get_root_window(),
-            int(round(bounds["x"])),
-            int(round(bounds["y"])),
-            max(1, int(round(bounds["width"]))),
-            max(1, int(round(bounds["height"]))),
-        )
+        pixbuf = _capture_pixbuf(bounds)
         if pixbuf is None or pixbuf_looks_black(pixbuf):
             return None
         return pixbuf

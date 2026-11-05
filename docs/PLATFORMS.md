@@ -26,6 +26,106 @@ responsible for starting the MCP itself without an unwanted console window.
 | macOS | Swift unit tests, `GOOS=darwin go vet`, package build, MCP smoke test | Permissions and desktop input |
 | Windows | .NET protocol and policy tests, `GOOS=windows go vet`, package build, MCP smoke test | Session, integrity level and desktop input |
 
+## Agent cursor on Linux
+
+Set `COMPUTER_USE_CURSOR=1` when starting `computer-use mcp` or the shared
+daemon to show an Agent arrow, animated moves, click pulses and AX target
+outlines on the desktop. Remote desktop viewers and display recordings see
+the same overlay. This is an optional Linux X11 feature; it requires a
+24-bit desktop, an ARGB32 visual, Shape input passthrough and an active
+compositing manager.
+Unsupported sessions leave it disabled and write an operator diagnostic.
+
+The renderer runs in the Go process. The existing Linux provider sends
+geometry-only cues through a private inherited socket; typed text and key
+contents are not sent. The overlay does not take focus or intercept input.
+It illustrates HCU's existing actions and does not provide background input
+or separate control of the real pointer.
+
+Movement is illustrative and never delays input. A click pulse indicates
+emitted pointer input, an AX outline indicates the operation's target, and a
+red arrow indicates an AX operation that raised an error. These cues do not
+prove the application applied the action. Idle cursors disappear automatically.
+
+With the standard X11 capture path, HCU takes a desktop-wide
+capture lease and temporarily clips all HCU overlays to empty shapes. The
+windows stay mapped, so clipping does not start a window close animation.
+Clients with the cursor disabled also participate. A one-pixel witness
+confirms that the compositor has processed the clips and then removes itself
+the same way. This requires ordered compositor handling of shape changes.
+Recordings can show brief gaps and the witness during these captures. If a
+reader disconnects mid-capture, surviving renderers repaint their cues once
+the lease can be reclaimed.
+
+If exclusion cannot be confirmed, HCU refuses the capture. The failed call
+requests a provider reset; the next call starts a fresh provider without
+restarting the MCP server or daemon. Desktop actions are not automatically
+replayed, and input already emitted remains reported. Recovery requires a
+responsive desktop and compositor. Normal renderer shutdown clips the cues
+and lets the compositor retire them before destroying the windows. Native
+connection operations have bounded deadlines, and shutdown can close the
+underlying X11 transport even when X11 is stalled. On desktops that animate
+destroyed windows, exclude HCU overlays from close animations to cover a
+forced renderer kill, when HCU cannot clip the windows before they disappear.
+
+### Clean capture with the Picom companion
+
+A managed X11 desktop can run the optional Picom companion with its legacy
+24-bit XRender backend. Build it with
+`computer-use/native/linux/picom/build.sh <output-directory>` on Linux with the
+Picom build dependencies, Meson, Ninja, curl, patch and sha256sum installed.
+The build script verifies its pinned source archive.
+
+Pushes to the `clawsphere` branch build Debian 12 packages for Linux amd64
+and arm64 in the **ClawSphere Linux packages** workflow. Download the
+`hcu-<version>-linux-<arch>.tar.gz` for your architecture from the run's
+artifacts. Each archive contains `computer-use` and its matching
+`picom-hcu`. Both use the desktop's installed runtime libraries and tools.
+With Go and the build dependencies installed, run
+`scripts/package-linux.sh artifacts` on either architecture to build locally.
+
+Set `HCU_CLEAN_CAPTURE_SOCKET` to an absolute socket path inside a directory
+owned by the desktop user with mode 0700. Start `picom-hcu --backend xrender`
+in place of the desktop's regular compositor, with that variable in its
+environment. Start HCU for the same display and user with the same socket
+path. Keep a separate endpoint for each display. HCU checks the compositor's
+session identifier against its own X11 root, including after a restart.
+Update the companion and HCU together when deploying this protocol.
+
+The companion uses the same XRender painting code and skips the marked HCU
+layers in a temporary offscreen render. GUI screenshots and AX pixel evidence
+use that output. The desktop, VNC and recordings continue to see the visible
+scene, including the arrow, throughout capture. A failed configured endpoint
+fails the capture. Unset the variable to use standard X11 capture exclusion.
+The companion supports desktops up to 16 Mi pixels and allocates its capture
+pixmap only while serving requests. Requests arriving together share one
+immutable frame, with each client reading its own crop. Capture batches are
+bounded and separated by a cooldown to leave time for visible redraws.
+Expired requests are discarded. Local X11 connections use MIT-SHM readback
+when available. The compositor waits for replies asynchronously and yields
+between bands of a large shared-memory readback.
+
+To exercise the companion with an isolated Xvfb session, run
+`computer-use/native/linux/picom/verify.sh <path-to-picom-hcu>` with Xvfb
+and Python Xlib installed.
+
+The native tests deliberately draw on a disposable desktop:
+
+```bash
+cd computer-use
+go build -o /tmp/hcu-cursor-test ./cmd/computer-use
+COMPUTER_USE_CURSOR_DESKTOP_TEST=1 \
+COMPUTER_USE_CURSOR_TEST_BINARY=/tmp/hcu-cursor-test \
+go test ./internal/provider -run TestCursorDesktop -count=1
+```
+
+Set `COMPUTER_USE_CURSOR_FAULT_TEST=1` only on a disposable desktop to also
+suspend and resume its compositor and X server. The fading outline test
+requires a separate desktop with picom configured for instant fade-in and
+slow fade-out (for example, `-f -I 1 -O 0.01 -D 10`); enable it with
+`COMPUTER_USE_CURSOR_FADE_TEST=1` and run only
+`TestCursorDesktopExcludesFadingOutline`.
+
 ## AX selection and editable controls
 
 The shared AX interface accepts `select`; native capabilities determine which

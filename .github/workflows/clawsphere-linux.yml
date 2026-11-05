@@ -1,0 +1,62 @@
+name: ClawSphere Linux packages
+
+on:
+  push:
+    branches: [clawsphere]
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Linux ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    container: debian:bookworm
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Install build and smoke test dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates git curl build-essential meson ninja-build patch pkg-config \
+            uthash-dev libev-dev libconfig-dev libpcre3-dev libpixman-1-dev \
+            libx11-dev libx11-xcb-dev libxext-dev \
+            libxcb1-dev libxcb-composite0-dev libxcb-damage0-dev libxcb-glx0-dev \
+            libxcb-image0-dev libxcb-present-dev libxcb-randr0-dev libxcb-render-util0-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-shm0-dev libxcb-sync-dev \
+            libxcb-xfixes0-dev libxcb-xinerama0-dev python3 python3-xlib xvfb
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: computer-use/go.mod
+          cache-dependency-path: computer-use/go.sum
+      - name: Build and verify package
+        id: build
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          scripts/package-linux.sh artifacts
+          package="hcu-$(cat VERSION)-linux-$ARCH"
+          archive="artifacts/$package.tar.gz"
+          unpacked=$(mktemp -d)
+          tar -xzf "$archive" -C "$unpacked"
+          python3 scripts/smoke-mcp.py "$unpacked/$package/computer-use"
+          computer-use/native/linux/picom/verify.sh "$unpacked/$package/picom-hcu"
+          printf 'archive=%s\n' "$archive" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.build.outputs.archive }}
+          archive: false
+          if-no-files-found: error

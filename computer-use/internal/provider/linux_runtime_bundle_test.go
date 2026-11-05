@@ -33,6 +33,8 @@ func TestLinuxRuntimeBundleIsComplete(t *testing.T) {
 		"native/linux/provider/ax_target_notes.py",
 		"native/linux/provider/ax_transition_evidence.py",
 		"native/linux/provider/ax_virtual_table.py",
+		"native/linux/provider/compositor_capture.py",
+		"native/linux/provider/cursor.py",
 		"native/linux/provider/desktop_layout.py",
 		"native/linux/provider/element_resolver.py",
 		"native/linux/provider/find_walk.py",

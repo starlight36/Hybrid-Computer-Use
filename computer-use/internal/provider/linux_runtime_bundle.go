@@ -6,6 +6,7 @@ import runtimebundle "github.com/microsoft/Hybrid-Computer-Use/computer-use"
 
 var linuxProviderPaths = []string{
 	"native/linux/provider/foundation.py",
+	"native/linux/provider/cursor.py",
 	"native/linux/provider/node_geometry.py",
 	"native/linux/provider/node_visibility.py",
 	"native/linux/provider/a11y_enable.py",
@@ -33,6 +34,7 @@ var linuxProviderPaths = []string{
 	"native/linux/provider/element_resolver.py",
 	"native/linux/provider/semantic_window_candidates.py",
 	"native/linux/provider/semantic_scan.py",
+	"native/linux/provider/compositor_capture.py",
 	"native/linux/provider/gui_capture.py",
 	"native/linux/provider/gui_dispatch.py",
 	"native/linux/provider/snapshot.py",
