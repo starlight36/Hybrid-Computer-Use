@@ -58,9 +58,6 @@ Paper = "https://arxiv.org/abs/2610.41432"
 Issues = "https://github.com/microsoft/Hybrid-Computer-Use/issues"
 Changelog = "https://github.com/microsoft/Hybrid-Computer-Use/blob/main/CHANGELOG.md"
 
-[tool.setuptools.dynamic]
-version = { file = "VERSION" }
-
 [tool.setuptools.packages.find]
 include = ["hcu*"]
 

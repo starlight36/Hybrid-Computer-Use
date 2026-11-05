@@ -87,6 +87,8 @@ For a ClawSphere release, set `VERSION` to
 `<upstream-version>-clawsphere-<revision>` and push an annotated tag with the
 same value from the maintenance branch. The workflow publishes a GitHub
 prerelease with both verified packages and uses the tag annotation as its notes.
+Python source installs represent the same version as
+`<upstream-version>+clawsphere.<revision>` in package metadata.
 
 Set `HCU_CLEAN_CAPTURE_SOCKET` to an absolute socket path inside a directory
 owned by the desktop user with mode 0700. Start `picom-hcu --backend xrender`
