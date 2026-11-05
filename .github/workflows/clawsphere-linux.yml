@@ -3,6 +3,7 @@ name: ClawSphere Linux packages
 on:
   push:
     branches: [clawsphere]
+    tags: ['*.*.*-clawsphere-*']
 
 permissions:
   contents: read
@@ -47,11 +48,16 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}
         run: |
+          version=$(cat VERSION)
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            [[ "$GITHUB_REF_NAME" == "$version" && "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-clawsphere-[0-9]+$ ]]
+          fi
           scripts/package-linux.sh artifacts
-          package="hcu-$(cat VERSION)-linux-$ARCH"
+          package="hcu-$version-linux-$ARCH"
           archive="artifacts/$package.tar.gz"
           unpacked=$(mktemp -d)
           tar -xzf "$archive" -C "$unpacked"
+          test "$("$unpacked/$package/computer-use" --version)" = "$version"
           python3 scripts/smoke-mcp.py "$unpacked/$package/computer-use"
           computer-use/native/linux/picom/verify.sh "$unpacked/$package/picom-hcu"
           printf 'archive=%s\n' "$archive" >> "$GITHUB_OUTPUT"
@@ -60,3 +66,30 @@ jobs:
           path: ${{ steps.build.outputs.archive }}
           archive: false
           if-no-files-found: error
+
+  release:
+    name: Publish ClawSphere release
+    if: github.ref_type == 'tag'
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish verified packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag --prerelease \
+            --title "$GITHUB_REF_NAME" --notes-from-tag \
+            "dist/hcu-$GITHUB_REF_NAME-linux-amd64.tar.gz" \
+            "dist/hcu-$GITHUB_REF_NAME-linux-arm64.tar.gz"
