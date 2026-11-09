@@ -2,6 +2,7 @@
 
 import array
 import fcntl
+import mmap
 import socket
 import time
 import tempfile
@@ -42,7 +43,9 @@ class CompositorCaptureTests(unittest.TestCase):
             thread = threading.Thread(target=reply)
             thread.start()
             try:
-                result = compositor_capture.grab_rgb(endpoint, *fixture["crop"], session)
+                with mock.patch.object(compositor_capture.mmap, "mmap", wraps=mmap.mmap) as mapping:
+                    result = compositor_capture.grab_rgb(endpoint, *fixture["crop"], session)
+                    mapping.assert_called_once_with(mock.ANY, len(pixels), flags=mmap.MAP_PRIVATE, prot=mmap.PROT_READ)
             finally:
                 thread.join(3)
             self.assertFalse(thread.is_alive())

@@ -27,7 +27,8 @@ def _rgb_crop(fd, frame, crop):
             fcntl.fcntl(fd, fcntl.F_GET_SEALS) & _REQUIRED_SEALS != _REQUIRED_SEALS):
         raise RuntimeError("invalid compositor capture buffer")
     rgb = bytearray(width * height * 3)
-    with mmap.mmap(fd, size, access=mmap.ACCESS_READ) as data:
+    # Some sandbox runtimes reject even read-only shared mappings of a sealed memfd.
+    with mmap.mmap(fd, size, flags=mmap.MAP_PRIVATE, prot=mmap.PROT_READ) as data:
         offset = ((y - top) * stride + x - left) * 4
         if width == stride:
             raw = data[offset:offset + width * height * 4]
