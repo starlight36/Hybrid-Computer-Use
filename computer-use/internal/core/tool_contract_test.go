@@ -64,8 +64,14 @@ func TestMCPInstructionsRouteDesktopInputThroughTheTools(t *testing.T) {
 		}
 	}
 	ax := findToolDefinition(t, "AX")
-	if !strings.Contains(ax.Description, "keypress/type without ref go to the focused window") {
-		t.Fatal("AX description must say where ref-less keys go")
+	for _, fragment := range []string{
+		"keypress/type without ref use the batch target",
+		"initially the focused window unless refs or window_ref select it",
+		"activate with wN or title switches the batch target for later refs and ref-less steps",
+	} {
+		if !strings.Contains(ax.Description, fragment) {
+			t.Fatalf("AX description must explain ref-less input routing: missing %q", fragment)
+		}
 	}
 }
 

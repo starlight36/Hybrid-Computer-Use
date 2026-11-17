@@ -33,6 +33,47 @@ def _render(*children):
         root, None, [0], prune=True, indexer=runtime.StableIndexer({}))
 
 
+class NestedModalCoverageTests(AtspiPatchedTestCase):
+    def test_visible_nested_modal_reports_suppressed_window_content(self):
+        close = _TreeNode(role="push button", name="Close")
+        dialog = _TreeNode(role="dialog", name="Attachment", kids=(close,))
+        dialog.states.add(STATE.MODAL)
+        for prune in (False, True):
+            with self.subTest(prune=prune):
+                root = _TreeNode(role="frame", name="Messages", kids=(dialog,))
+                records, _lines, annotations = runtime.render_tree(
+                    root, None, [0], prune=prune)
+                self.assertIn("Close", [record["name"] for record in records])
+                modal = [item for item in annotations
+                         if item.get("reason") == "modal_dialog"]
+                self.assertEqual(len(modal), 1)
+                self.assertEqual(modal[0]["parentRuntimeId"], [0, 0])
+                fixture = json.loads((Path(__file__).parents[1] / "testdata" /
+                                      "provider-wire" / "modal-scope.response.json").read_text())
+                encoded = wire._accessibility_result({
+                    "ok": True, "snapshot": {"annotations": modal},
+                })
+                self.assertEqual(encoded["snapshot"]["annotations"],
+                                 fixture["accessibility"]["snapshot"]["annotations"])
+
+    def test_root_hidden_and_nonmodal_dialogs_do_not_suppress_inventory(self):
+        for nested, showing, modal in ((False, True, True),
+                                       (True, False, True),
+                                       (True, True, False)):
+            with self.subTest(nested=nested, showing=showing, modal=modal):
+                dialog = _TreeNode(role="dialog", name="Preferences")
+                if modal:
+                    dialog.states.add(STATE.MODAL)
+                if not showing:
+                    dialog.states.discard(STATE.SHOWING)
+                root = (_TreeNode(role="frame", kids=(dialog,))
+                        if nested else dialog)
+                _records, _lines, annotations = runtime.render_tree(
+                    root, None, [0], prune=True)
+                self.assertFalse(any(item.get("reason") == "modal_dialog"
+                                     for item in annotations))
+
+
 class ClosedComboPopupTests(AtspiPatchedTestCase):
     """Options of a closed combo box are neither rendered nor addressable.
 

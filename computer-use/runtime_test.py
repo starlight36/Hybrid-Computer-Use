@@ -5,6 +5,7 @@ import unittest
 
 from runtime_tests.test_core import *  # noqa: F401,F403
 from runtime_tests.test_text_input import *  # noqa: F401,F403
+from runtime_tests.test_set_value_readback import *  # noqa: F401,F403
 from runtime_tests.test_input_method import *  # noqa: F401,F403
 from runtime_tests.test_window_focus import *  # noqa: F401,F403
 from runtime_tests.test_action_notes import *  # noqa: F401,F403
@@ -25,14 +26,19 @@ from runtime_tests.test_events import *  # noqa: F401,F403
 from runtime_tests.test_capabilities import *  # noqa: F401,F403
 from runtime_tests.test_combo_edit import *  # noqa: F401,F403
 from runtime_tests.test_editable_click import *  # noqa: F401,F403
+from runtime_tests.test_background_input import *
 from runtime_tests.test_select_boundaries import *  # noqa: F401,F403
+from runtime_tests.test_gtk_combo import *  # noqa: F401,F403
+from runtime_tests.test_chromium_dropdown import *  # noqa: F401,F403
 from runtime_tests.test_dropdown_navigation import *  # noqa: F401,F403
 from runtime_tests.test_chromium_windows import *  # noqa: F401,F403
 from runtime_tests.test_a11y_enable import *  # noqa: F401,F403
 from runtime_tests.test_popup_rendering import *  # noqa: F401,F403
 from runtime_tests.test_native_windows import *  # noqa: F401,F403
+from runtime_tests.test_x11_client_identity import *  # noqa: F401,F403
 from runtime_tests.test_window_geometry import *  # noqa: F401,F403
 from runtime_tests.test_cursor import *  # noqa: F401,F403
+from runtime_tests.test_guard_shadow import *  # noqa: F401,F403
 
 
 if __name__ == "__main__":

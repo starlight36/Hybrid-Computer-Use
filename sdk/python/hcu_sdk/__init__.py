@@ -434,9 +434,10 @@ class _Builders:
         return self.call("AX", {"mode": "apps"})
 
     def observe(self, target=None, root=None, scope=None, observe=None, since=None,
-                *, window_ref=None, app=None):
+                *, window_ref=None, app=None, read_text=None):
         args = _discovery_args("observe", target, window_ref, app)
-        for key, value in (("root", root), ("scope", scope), ("observe", observe)):
+        for key, value in (("root", root), ("scope", scope), ("observe", observe),
+                           ("read_text", read_text)):
             if value is not None:
                 args[key] = value
         return self.call("AX", args, since=since)

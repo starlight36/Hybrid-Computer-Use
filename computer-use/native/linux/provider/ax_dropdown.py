@@ -30,6 +30,7 @@ from .ax_select import (
     _failure,
     _quote,
     _same,
+    _same_selection_item,
     _selection_container,
     _wait_until,
     text_between,
@@ -406,18 +407,128 @@ def _list_selection_first(node):
             and safe(node.get_selection_iface) is None)
 
 
+def _select_gtk_option(node, option, wanted):
+    parent = safe(option.get_parent)
+    index = safe(option.get_index_in_parent)
+
+    def owned():
+        return (parent is not None and index is not None and index >= 0
+                and _same_selection_item(safe(parent.get_parent), node)
+                and _same_selection_item(safe(option.get_parent), parent)
+                and safe(option.get_index_in_parent) == index
+                and _same_selection_item(
+                    safe(lambda: parent.get_child_at_index(index)), option))
+
+    if safe(node.get_selection_iface) is None:
+        raise _failure("select_unavailable: the element's container does not support "
+                       "selection; no input was emitted.")
+    if not owned():
+        raise _failure("select_unavailable: item ownership changed; "
+                       "no input was emitted.")
+
+    def committed():
+        if not owned():
+            return False
+        count = safe(lambda: Atspi.Selection.get_n_selected_children(node))
+        selected = (safe(lambda: Atspi.Selection.get_selected_child(node, 0))
+                    if count == 1 else None)
+        return (_same_selection_item(selected, option)
+                and str(safe(selected.get_name, "")).strip() == wanted)
+
+    if committed():
+        return wanted
+    if not all(state_contains(target, state)
+               for target in (node, option)
+               for state in (Atspi.StateType.ENABLED, Atspi.StateType.SENSITIVE)):
+        raise _failure("select_unavailable: the requested option is disabled; "
+                       "no input was emitted.")
+    action_evidence.update(input_emitted=True, route="selection_api")
+    try:
+        Atspi.Selection.select_child(node, int(index))
+    except Exception as exc:
+        raise _failure(
+            "select_unavailable: the container refused to select the item; "
+            "the selection may have changed.", code="effect_unknown",
+            emitted=True, phase="emission") from exc
+    action_evidence.update(readback_sampled=True)
+    if not _wait_until(committed, 0.6):
+        raise _failure(
+            "select_unverified: the item did not report itself selected.",
+            code="effect_unknown", emitted=True, phase="readback")
+    return wanted
+
+
+def is_chromium_select(node):
+    return (node_role(node) in DROPDOWN_ROLES
+            and application_toolkit(node) == "chromium"
+            and (safe(node.get_attributes, {}) or {}).get("tag") == "select")
+
+
+def _select_chromium_option(node, option, wanted):
+    def committed():
+        try:
+            options = _dropdown_options(node)
+            matches = [item for item in options if option_name(item) == wanted]
+            if len(matches) != 1 or not _same_selection_item(matches[0], option):
+                return None
+            selected = []
+            for item in options:
+                states = safe(item.get_state_set)
+                if states is None:
+                    return None
+                if states.contains(Atspi.StateType.SELECTED):
+                    selected.append(item)
+            return (any(_same_selection_item(item, option) for item in selected)
+                    and (len(selected) == 1
+                         or state_contains(node, Atspi.StateType.MULTISELECTABLE)))
+        except OperationFailure:
+            return None
+
+    choice = committed()
+    if choice is None:
+        raise _failure("select_unavailable: the option identity or selection "
+                       "could not be read; no input was emitted.")
+    if choice:
+        return wanted
+    if node_role(node) == "list box":
+        raise _failure(
+            "select_unavailable: this HTML list box has no option action "
+            "verified to emit both input and change events; no input was emitted.")
+    if not all(state_contains(target, state)
+               for target in (node, option)
+               for state in (Atspi.StateType.ENABLED, Atspi.StateType.SENSITIVE)):
+        raise _failure("select_unavailable: the requested option is disabled; "
+                       "no input was emitted.")
+    count = int(safe(option.get_n_actions, 0) or 0)
+    names = [safe(lambda index=index: option.get_action_name(index), "")
+             for index in range(count)]
+    if "select" not in names:
+        raise _failure("select_unavailable: the option has no select action; "
+                       "no input was emitted.")
+    action_evidence.update(input_emitted=True, route="semantic_action")
+    try:
+        option.do_action(names.index("select"))
+    except Exception as exc:
+        raise _failure(
+            "select_unverified: the option action did not return; "
+            "the selection may have changed.", code="effect_unknown",
+            emitted=True, phase="emission") from exc
+    action_evidence.update(readback_sampled=True)
+    if not _wait_until(committed, 0.6):
+        raise _failure(
+            "select_unverified: the requested option could not be confirmed "
+            "in its control; the selection may have changed.",
+            code="effect_unknown", emitted=True, phase="readback")
+    return wanted
+
+
 def select_dropdown_option(node, text, window=None):
     """Choose the option named ``text`` of a closed or open drop-down.
 
-    Browsers expose an HTML <select> as a combo box whose options are menu
-    items with a single "select" action; while the list is closed they are
-    not showing and carry no refs. The option's own action is tried first
-    (Chrome's Selection.select_child returns False), then the combo box's
-    own Selection.select_child (GTK sets the active item through it), then
-    the option container's Selection.select_child. Gecko content selects
-    instead activate their separate native popup before any value mutation. A
-    closed list that holds its own selection is tried through its Selection
-    first; see _list_selection_first().
+    Chromium HTML combos use the option action and fresh selected-state
+    readback. HTML list box mutations are refused because Chromium exposes
+    only change, not input events. GTK combos use their Selection interface.
+    Neither route opens a popup or sends keys. Gecko uses its native popup.
 
     A combo box with committed-value readback (GTK and Qt) succeeds only
     when that value matches the option afterwards; otherwise the
@@ -434,7 +545,14 @@ def select_dropdown_option(node, text, window=None):
             and not _gecko_content_select(node)
             and state_contains(node, Atspi.StateType.EXPANDED)):
         node = _gecko_popup_source(node)
-    options = _dropdown_options(node)
+    chromium = is_chromium_select(node)
+    try:
+        options = _dropdown_options(node)
+    except OperationFailure:
+        if not chromium:
+            raise
+        raise _failure("select_options_incomplete: the control options could "
+                       "not be read completely; no input was emitted.") from None
     wanted = str(text).strip()
     matches = [option for option in options if option_name(option) == wanted]
     if len(matches) != 1:
@@ -447,6 +565,10 @@ def select_dropdown_option(node, text, window=None):
                 ", ".join(_quote(name) for name in names[:30]) or "none readable"),
             code="invalid_argument")
     option = matches[0]
+    if chromium:
+        return _select_chromium_option(node, option, wanted)
+    if node_role(node) == "combo box" and application_toolkit(node) == "gtk":
+        return _select_gtk_option(node, option, wanted)
     shows_choice = committed_dropdown_value(node) is not None
 
     def committed():
@@ -481,8 +603,6 @@ def select_dropdown_option(node, text, window=None):
     if (index is not None and index >= 0 and parent is not None
             and safe(node.get_selection_iface) is not None
             and _same(safe(parent.get_parent), node)):
-        # GTK commits through the combo box's own Selection, which sets the
-        # active item; the popup menu's Selection only highlights an item.
         _emit_dropdown_action(lambda: Atspi.Selection.select_child(node, int(index)))
         if _wait_until(committed, 0.6):
             return wanted
@@ -520,7 +640,7 @@ def owning_dropdown(node):
         current = safe(current.get_parent)
         if current is None:
             break
-        if node_role(current) == "combo box":
+        if node_role(current) == "combo box" or is_chromium_select(current):
             return current
     return projected_list_owner(node)
 

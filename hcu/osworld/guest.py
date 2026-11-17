@@ -51,6 +51,9 @@ GUEST_STDERR = f"{GUEST_TASK_DIR}/agent.stderr"
 GUEST_FINAL = f"{GUEST_TASK_DIR}/final.txt"
 GUEST_DONE = f"{GUEST_TASK_DIR}/done.json"
 GUEST_LAUNCHER_STATUS = f"{GUEST_TASK_DIR}/launcher-status.json"
+# Guard decisions the MCP server appends when the guard is ablated; it
+# spans all turns of the task, so turn cleanup leaves it in place.
+GUEST_GUARD_LOG = f"{GUEST_TASK_DIR}/guard.jsonl"
 GUEST_GEMINI_ARCHIVE = f"{GUEST_TASK_DIR}/gemini-cli.tgz"
 
 

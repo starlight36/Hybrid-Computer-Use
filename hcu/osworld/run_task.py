@@ -21,6 +21,8 @@ from hcu.paths import (
     anchor_path_args,
 )
 from hcu.osworld.agents import AGENT_PROFILES, AGENTS
+from hcu.osworld.config import ablation_input_error
+from hcu.osworld.guide_ablation import ABLATION_NAMES, parse_ablation
 from hcu.osworld.guest_lifecycle import close_guest, prepare_guest, start_guest
 from hcu.osworld.phases import finish_run, record_failure, run_phases
 from hcu.osworld.preflight import docker_runtime
@@ -113,6 +115,15 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Expose only the AX channel (a11y,keyboard) or only the GUI "
             "channel (gui,keyboard); empty exposes both."
+        ),
+    )
+    parser.add_argument(
+        "--ablate",
+        default="",
+        help=(
+            "Comma-separated HCU mechanisms to remove ("
+            + ", ".join(ABLATION_NAMES)
+            + "); the agent gets the default guides without their passages."
         ),
     )
     parser.add_argument(
@@ -210,6 +221,18 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.code_mode and args.agent != "codex":
         parser.error("--code-mode applies only to --agent codex")
+    try:
+        args.ablate = parse_ablation(args.ablate)
+    except ValueError as error:
+        parser.error(f"--ablate: {error}")
+    error = ablation_input_error(
+        args.ablate,
+        instructions_file=args.instructions_file,
+        base_instructions_file=args.base_instructions_file,
+        code_mode=args.code_mode,
+    )
+    if error:
+        parser.error(error)
     profile = AGENT_PROFILES[args.agent]
     args.model = args.model or profile["default_model"]
     args.effort = args.effort or profile["default_effort"]

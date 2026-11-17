@@ -4,6 +4,7 @@ import re
 import subprocess
 
 from .foundation import InventoryResult, OperationFailure
+from .x11_client_identity import x11_client_pids
 from .desktop_layout import (
     normalize_x11_window_id,
     parse_xwininfo_layout,
@@ -76,6 +77,11 @@ def _x11_managed_windows():
             "height": height,
             "title": parts[8] if len(parts) > 8 else "",
         })
+    missing_pids = [window["id"] for window in windows if window["pid"] <= 0]
+    owners = x11_client_pids(missing_pids)
+    for window in windows:
+        if window["pid"] <= 0:
+            window["pid"] = owners.get(window["id"], 0)
     inventory = InventoryResult(windows, complete=True)
     _x11_window_inventory_cache["all"] = inventory
     return inventory

@@ -1,0 +1,24 @@
+{
+  "protocol": "computer-use-provider",
+  "schema_version": 2,
+  "request_id": "background-scroll",
+  "operation": "resolve_and_act",
+  "action": {
+    "protocol_version": 2,
+    "intent": "scroll",
+    "app": "Editor",
+    "target": {
+      "selector": "scroll bar \"Items\"",
+      "windowHandle": "w2:0123456789abcdef0123456789abcdef",
+      "role": "scroll bar",
+      "name": "Items",
+      "hasName": true
+    },
+    "input": {
+      "allow_global_input": false,
+      "direction": "down",
+      "pages": 1.5
+    },
+    "observation": {}
+  }
+}

@@ -35,8 +35,17 @@ fits which state, and how to combine them.
 - Once the source, target, and operation are known, act. Further checks must
   answer a concrete blocker.
 - Plan from one read. After `observe` or `find`, put every action you can
-  already determine for that window into one `act`, while later refs and
-  focus remain valid. Split when the next action needs a new observation.
+  already determine into one `act`, while later refs and focus remain valid.
+  Split when the next action needs a new observation.
+- Use `activate` with a `wN` or title to switch the batch target.
+  Later refs and ref-less steps use that window. AX rejects refs from another
+  window without explicit `activate`; activate back before reusing the
+  previous window's refs. Each step reports its window; the final observation
+  uses the last executed window.
+- On Linux, set `allow_global_input:false` on each AX `click` or `scroll`
+  when driver focus changes or global pointer/keyboard input are forbidden.
+  Semantic actions can still cause the application to raise a dialog or take
+  focus; this field does not guarantee complete background isolation.
 - Every `act` result starts with what happened, then a diff:
 
 ```text
@@ -91,6 +100,39 @@ windows: opened w5 "Insert Sheet" (dialog, focused)
 - On macOS, use `open -a APP` to launch through LaunchServices. Reuse an
   existing application instance and verify its window before sending input.
 
+## Read Long Text On Linux
+
+Tree text is a preview. A clipped field shows `… field length=N codepoints`
+and a read call. Non-interactive content with AT-SPI Text has a value preview
+of at most 80 code points, plus an ellipsis when clipped. When the node has
+an `rN`, use that ref to read the text:
+
+```json
+{"mode":"observe","root":"r12","read_text":{"field":"value","start":0,"limit":4000}}
+```
+
+Use an existing element ref for `root`. Omit `app`. An optional `window_ref`
+must match the ref's owner. Keep `mode:"observe"`, but
+omit the separate `observe` field and `scope`. `value` reads AT-SPI Text and
+fails explicitly when Text is unavailable; it does not substitute another
+property. `name` and `description` read the complete accessible properties.
+
+Offsets count Unicode code points, not bytes. Pages include `start` and
+exclude `end`. `start` is a nonnegative integer and defaults to `0`.
+`limit` is an integer from `1` to `4000` and defaults to `4000`. The server
+can return fewer code points to fit the inline budget. `start == total` is
+a valid empty page. Out-of-range offsets and limits fail explicitly.
+
+After the standard AX evidence, each text page starts with JSON containing `ref`, `window_ref`,
+`field`, `start`, `end`, `total`, and `truncated`, followed by the raw text.
+When more text remains, `next_read` gives the next AX call. Follow that call
+rather than adding your requested limit to `start`. Structured output, when
+enabled, also contains the raw text in `text_page.text`.
+
+Each page reads live content. A detected character-count change during the
+read fails that call. Edits between pages or edits that preserve the length
+can escape detection; combined pages are not a guaranteed snapshot.
+
 ## When Something Fails
 
 Every AX and GUI error starts with a `code`, a recovery `hint`,
@@ -111,6 +153,9 @@ Never repeat the request when `retry_same_request=false`. Next step by code:
   not resend the same batch.
 - `effect_unknown`: input may have been sent. Inspect state before any retry,
   so that nothing is applied twice.
+- `global_input_forbidden`: this step sent no input; earlier steps may have
+  run. Keep `allow_global_input:false` unless global input is authorized.
+  Observe and choose an action compatible with the user's constraints.
 - `ambiguous_window`, `window_not_found`: choose a `wN` from the listed windows.
 - `no_focused_window`: start the batch with `activate`.
 - `app_unavailable`: if the application is still starting, wait once for

@@ -123,6 +123,19 @@ def test_gateway_cap_is_checked_once_before_the_agent_starts(health, limit, ok):
             check_gateway_budget(health, limit)
 
 
+def test_gateway_token_log_must_be_the_runs(tmp_path):
+    from hcu.osworld.usage import check_gateway_token_log
+
+    log = tmp_path / "run" / "gateway-tokens.jsonl"
+    check_gateway_token_log(json.dumps({"out": str(log)}), log)
+    check_gateway_token_log(json.dumps({"out": str(tmp_path / "run" / ".." / "run" / log.name)}), log)
+    # The Anthropic gateway reports no log; a relative path cannot be checked.
+    for health in ("{}", "not json", json.dumps({"out": "gateway-tokens.jsonl"})):
+        check_gateway_token_log(health, log)
+    with pytest.raises(RuntimeError, match="token log"):
+        check_gateway_token_log(json.dumps({"out": str(tmp_path / "other.jsonl")}), log)
+
+
 def test_rate_limit_waits_extend_the_deadline_and_count_as_progress(polling, monkeypatch):
     monkeypatch.setattr(agent_loop, "MODEL_PROGRESS_TIMEOUT_SEC", 5)
     waits = []

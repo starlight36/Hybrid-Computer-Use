@@ -231,9 +231,11 @@ func newAXNodeFromRecord(snapshot *AppSnapshot, record *ElementRecord, binding a
 		Name:          normalizedTreeText(record.Name),
 		States:        typedAXStates(record),
 		Properties: AXProperties{
-			Value:       normalizedTreeText(record.Value),
-			Description: normalizedTreeText(record.Description),
-			Placeholder: normalizedTreeText(record.Placeholder),
+			TextTruncated: append([]string(nil), record.TextTruncated...),
+			TextLengths:   axTextLengths(record),
+			Value:         normalizedTreeText(record.Value),
+			Description:   normalizedTreeText(record.Description),
+			Placeholder:   normalizedTreeText(record.Placeholder),
 		},
 		Relations: record.Relations,
 		NameProvenance: AXNameProvenance{

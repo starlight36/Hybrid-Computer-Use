@@ -3,6 +3,7 @@ package core
 import (
 	"encoding/base64"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -182,6 +183,11 @@ func init() {
 // WithAXTextEvidence puts the AX evidence line first: one JSON object that
 // starts with ok, then code, path, message, hint and counts.
 func WithAXTextEvidence(result ToolCallResult) ToolCallResult {
+	if result.StructuredContent["text_page"] != nil {
+		result.StructuredContent = maps.Clone(result.StructuredContent)
+		delete(result.StructuredContent, "text_page")
+		delete(result.StructuredContent, "text_read")
+	}
 	return withEvidenceLine(result, axPublicFields)
 }
 

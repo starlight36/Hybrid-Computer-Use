@@ -92,6 +92,7 @@ func providerObservationOptionsFromOperation(
 	// the read (attachDesktopFrame), so the provider never captures one.
 	noImage := false
 	return ProviderObservationOptions{
+		TextRead:          operation.TextRead,
 		TextLimit:         providerTextLimit(operation.TextLimit),
 		MaxTreeNodes:      maxTreeNodes,
 		MaxTreeDepth:      operation.MaxTreeDepth,

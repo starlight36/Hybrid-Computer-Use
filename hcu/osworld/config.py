@@ -12,7 +12,13 @@ import json
 from pathlib import Path
 import sys
 
-from hcu.paths import DEFAULT_ASSET_CACHE, DEFAULT_RESULTS_DIR
+from hcu.osworld.guide_ablation import ablation_value, parse_ablation
+from hcu.paths import (
+    DEFAULT_ASSET_CACHE,
+    DEFAULT_BASE_INSTRUCTIONS_FILE,
+    DEFAULT_INSTRUCTIONS_FILE,
+    DEFAULT_RESULTS_DIR,
+)
 
 # Config key -> run_task flag, for options passed through unchanged.
 VALUE_OPTIONS = {
@@ -51,8 +57,14 @@ PATH_KEYS = (
     "token_log", "guest_image", "artifact_dir", "agent_binary", "mcp_binary",
     "instructions_file", "base_instructions_file", "asset_cache", "results_dir",
 )
+# ``ablate`` is a comma-separated string or a list; the loader stores it as a
+# list in canonical order and passes it on as one --ablate value.
+ABLATION_KEY = "ablate"
 QUEUE_KEYS = ("run_id", "tasks", "results_dir", "max_active_tasks", "launch_stagger_seconds")
-CONFIG_KEYS = frozenset(VALUE_OPTIONS) | set(SWITCHES) | set(TASK_OPTIONS) | set(QUEUE_KEYS)
+CONFIG_KEYS = (
+    frozenset(VALUE_OPTIONS) | set(SWITCHES) | set(TASK_OPTIONS) | set(QUEUE_KEYS)
+    | {ABLATION_KEY}
+)
 TASK_KEYS = frozenset(TASK_OPTIONS) | {"id", "stratum"}
 
 
@@ -63,6 +75,37 @@ def single_path_component(value: object, label: str) -> str:
     ):
         raise ValueError(f"{label} must be a nonempty single path component: {value!r}")
     return value
+
+
+def ablation_input_error(
+    ablate: tuple[str, ...],
+    *,
+    instructions_file: str | Path | None,
+    base_instructions_file: str | Path | None,
+    code_mode: bool,
+) -> str | None:
+    """Why the selected guides cannot run under ``ablate``, or None.
+
+    An ablation run uses copies of the default guides without the passages
+    that describe the removed mechanisms. Other guides, no guide, and the
+    code-mode add-on may still describe them, so they are refused.
+    """
+    if not ablate:
+        return None
+    if code_mode:
+        return "--ablate cannot be combined with --code-mode"
+    for label, value, default in (
+        ("instructions file", instructions_file, DEFAULT_INSTRUCTIONS_FILE),
+        ("base instructions file", base_instructions_file, DEFAULT_BASE_INSTRUCTIONS_FILE),
+    ):
+        if value is None:
+            continue
+        if not value or Path(value).expanduser().resolve() != default.resolve():
+            return (
+                f"--ablate uses ablated copies of the default guides; "
+                f"the {label} must be {default}, got {str(value)!r}"
+            )
+    return None
 
 
 def load_config(path: Path) -> dict:
@@ -93,6 +136,8 @@ def load_config(path: Path) -> dict:
     if len({task["id"] for task in tasks}) != len(tasks):
         raise ValueError("task ids must be unique")
     config["tasks"] = tasks
+    if ABLATION_KEY in config:
+        config[ABLATION_KEY] = list(parse_ablation(config[ABLATION_KEY]))
     if int(config["max_active_tasks"]) < 1:
         raise ValueError("max_active_tasks must be at least 1")
     config.setdefault("results_dir", str(DEFAULT_RESULTS_DIR))
@@ -101,6 +146,14 @@ def load_config(path: Path) -> dict:
         # An empty instructions_file disables the profile; keep it empty.
         if config.get(key):
             config[key] = str((path.parent / Path(config[key]).expanduser()).resolve())
+    error = ablation_input_error(
+        tuple(config.get(ABLATION_KEY) or ()),
+        instructions_file=config.get("instructions_file"),
+        base_instructions_file=config.get("base_instructions_file"),
+        code_mode=bool(config.get("code_mode")),
+    )
+    if error:
+        raise ValueError(error)
     # The gateway appends here; the runner reads budget and usage from it.
     config.setdefault(
         "token_log", str(Path(config["results_dir"]) / config["run_id"] / "gateway-tokens.jsonl")
@@ -127,5 +180,7 @@ def runner_command(config: dict, task: dict, result_dir: Path, run_started_at: s
         value = task.get(key, config.get(key))
         if value is not None:
             command += [flag, str(value)]
+    if config.get(ABLATION_KEY):
+        command += ["--ablate", ablation_value(tuple(config[ABLATION_KEY]))]
     command += [flag for key, flag in SWITCHES.items() if config.get(key)]
     return command

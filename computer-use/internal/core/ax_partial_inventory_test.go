@@ -80,6 +80,27 @@ func TestPartialInventoryCannotEstablishUniqueTitleFocusOrAbsence(t *testing.T) 
 	}
 }
 
+// A text wait without a window reads the focused window. When the window
+// list cannot be read, the call fails with that reason instead of
+// crashing the server on a missing window listing.
+func TestFocusWaitOnUnreadableInventoryFails(t *testing.T) {
+	s, backend := partialInventoryService()
+	for _, broken := range []bool{false, true} {
+		if broken {
+			backend.accessibilityResponse.OK = false
+			backend.accessibilityResponse.Error = "provider timed out"
+		}
+		result := PrepareAXEvidence(s.callTool(contract.PublicToolAX, map[string]any{
+			"mode": "act", "actions": []any{map[string]any{"type": "wait", "text": "Saved", "timeout_ms": 300}},
+		}))
+		text, _ := result.StructuredContent["message"].(string)
+		if !result.IsError || result.StructuredContent["input_emitted"] != false ||
+			!strings.Contains(text, "give window_ref") || strings.Contains(text, "no window has focus") {
+			t.Fatalf("broken=%v: %#v", broken, result.StructuredContent)
+		}
+	}
+}
+
 func TestInventoryCompletenessRecoveryPreservesRefs(t *testing.T) {
 	s, backend := partialInventoryService()
 	s.listApps()

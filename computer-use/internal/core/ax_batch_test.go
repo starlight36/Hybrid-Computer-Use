@@ -8,6 +8,147 @@ import (
 	"github.com/microsoft/Hybrid-Computer-Use/computer-use/internal/contract"
 )
 
+type globalInputPolicyBackend struct {
+	PlatformBackend
+	platform string
+}
+
+func (backend *globalInputPolicyBackend) HostInfo() HostBackendInfo {
+	return HostBackendInfo{Platform: backend.platform}
+}
+
+func TestAXGlobalInputPolicyRejectsWholeInvalidBatch(t *testing.T) {
+	tests := []struct {
+		name, platform string
+		action         map[string]any
+	}{}
+	for _, actionType := range contract.AXActionTypes {
+		if actionType == "click" || actionType == "scroll" {
+			continue
+		}
+		for _, policy := range []bool{false, true} {
+			tests = append(tests, struct {
+				name, platform string
+				action         map[string]any
+			}{actionType + "/" + contract.CompactJSON(policy), "linux", map[string]any{"type": actionType, "allow_global_input": policy}})
+		}
+	}
+	for _, actionType := range []string{"click", "scroll"} {
+		for _, value := range []any{nil, "false", 0.0, 1.0, []any{}, map[string]any{}} {
+			tests = append(tests, struct {
+				name, platform string
+				action         map[string]any
+			}{actionType + "/" + contract.CompactJSON(value), "linux", map[string]any{
+				"type": actionType, "allow_global_input": value,
+			}})
+		}
+		for _, platform := range []string{"darwin", "windows", "unknown"} {
+			for _, policy := range []bool{false, true} {
+				action := map[string]any{"type": actionType, "ref": "r1", "allow_global_input": policy}
+				if actionType == "scroll" {
+					action["direction"] = "down"
+				}
+				tests = append(tests, struct {
+					name, platform string
+					action         map[string]any
+				}{platform + "/" + actionType + "/" + contract.CompactJSON(policy), platform, action})
+			}
+		}
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			backend := &recordingPlatformBackend{}
+			service := NewServiceWithBackend(&globalInputPolicyBackend{backend, test.platform})
+			result := service.callTool(contract.PublicToolAX, map[string]any{
+				"mode": "act", "actions": []any{
+					map[string]any{"type": "activate", "title": "Editor"}, test.action,
+				},
+			})
+			evidence := axPublicEvidence(result.StructuredContent, result.IsError, result.Content)
+			if !result.IsError || evidence["code"] != contract.AXCodeInvalidArgument ||
+				evidence["path"] != "actions[1].allow_global_input" || evidence["completed"] != 0 || evidence["input_emitted"] != false {
+				t.Fatalf("invalid batch was not rejected before input: %#v, %s", evidence, ResultText(result))
+			}
+			if len(backend.calls) != 0 || len(backend.actionRequests) != 0 {
+				t.Fatalf("invalid batch reached the provider: %v, %v", backend.calls, backend.actionRequests)
+			}
+		})
+	}
+}
+
+func TestGlobalInputPolicyRejectsWrongToolOrTopLevel(t *testing.T) {
+	for _, tool := range []string{contract.PublicToolAX, contract.PublicToolGUI} {
+		for _, topLevel := range []bool{false, true} {
+			if tool == contract.PublicToolAX && !topLevel {
+				continue
+			}
+			backend := &recordingPlatformBackend{}
+			service := NewServiceWithBackend(&globalInputPolicyBackend{backend, "linux"})
+			action := map[string]any{"type": "click", "x": 1.0, "y": 1.0}
+			args := map[string]any{"actions": []any{action}}
+			if tool == contract.PublicToolAX {
+				args["mode"] = "act"
+				args["actions"] = []any{map[string]any{"type": "click", "ref": "r1"}}
+			}
+			if topLevel {
+				args["allow_global_input"] = false
+			} else {
+				action["allow_global_input"] = false
+			}
+			result := service.callTool(tool, args)
+			if !result.IsError || !strings.Contains(ResultText(result), "allow_global_input") || len(backend.calls) != 0 {
+				t.Fatalf("unsupported %s policy accepted: %s, calls %v", tool, ResultText(result), backend.calls)
+			}
+		}
+	}
+}
+
+func TestAXGlobalInputPolicyReachesProvider(t *testing.T) {
+	for _, kind := range []string{"click", "targeted scroll", "window scroll"} {
+		for _, policy := range []any{nil, false, true} {
+			t.Run(kind+"/"+contract.CompactJSON(policy), func(t *testing.T) {
+				service, backend := reportService(t, reportMain())
+				service.Backend = &globalInputPolicyBackend{backend, "linux"}
+				window, refs := reportObserve(t, service, "OK")
+				action := map[string]any{"type": "scroll", "direction": "down"}
+				args := map[string]any{"mode": "act", "actions": []any{action}}
+				if kind == "click" {
+					action = map[string]any{"type": "click", "ref": refs["OK"]}
+					args["actions"] = []any{action}
+				} else if kind == "targeted scroll" {
+					action["ref"] = refs["OK"]
+				} else {
+					args["window_ref"] = window
+				}
+				if policy != nil {
+					action["allow_global_input"] = policy
+				}
+				result := service.callTool(contract.PublicToolAX, args)
+				if result.IsError || len(backend.actionRequests) != 1 {
+					t.Fatalf("action failed: %s, requests %v", ResultText(result), backend.actionRequests)
+				}
+				request := backend.actionRequests[0]
+				var got *bool
+				if kind == "click" {
+					got = request.Click.AllowGlobalInput
+				} else {
+					got = request.Scroll.AllowGlobalInput
+					if request.Scroll.WindowCentre != (kind == "window scroll") {
+						t.Fatalf("lost scroll target: %#v", request.Scroll)
+					}
+				}
+				if policy == nil {
+					if got != nil {
+						t.Fatal("omitted policy was not preserved")
+					}
+				} else if got == nil || *got != policy.(bool) {
+					t.Fatalf("provider lost policy %v: %v", policy, got)
+				}
+			})
+		}
+	}
+}
+
 func TestCompactAXActionContentDropsRoutineRouteNotes(t *testing.T) {
 	result := compactAXActionContent(ToolCallResult{
 		Content: []ContentItem{{Type: "text", Text: strings.Join([]string{
@@ -275,7 +416,7 @@ func TestCrossWindowBatchFailsBeforeInput(t *testing.T) {
 			{actionType: "click", targetRef: secondRef},
 		}, nil,
 	)
-	if err == nil || !strings.Contains(err.Error(), "batch spans two windows") {
+	if err == nil || !strings.Contains(err.Error(), "not the current batch window") {
 		t.Fatalf("expected cross-window rejection, got %v", err)
 	}
 }

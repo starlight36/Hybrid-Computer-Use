@@ -320,8 +320,8 @@ func (s *Service) observeRecords(args map[string]any, since string) (Record, boo
 	if bad {
 		return errorRecord(contract.PublicToolAX, rejected), true
 	}
-	if request.observe == contract.ObserveScreenshot || request.observe == contract.ObserveFull {
-		// Screenshots go through the shared path and come back as files.
+	if request.readText != nil || request.observe == contract.ObserveScreenshot || request.observe == contract.ObserveFull {
+		// Text pages and screenshots use the shared read path.
 		return Record{}, false
 	}
 	readContext, identityErr := s.resolveAXReadIdentity(request.app, request.windowRef, "")

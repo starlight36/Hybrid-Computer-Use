@@ -105,7 +105,8 @@ shapes are:
 {mode: "find", window_ref: "w2", query: {role: "button", name_contains: "Save"}}
 {mode: "act", actions: [{type: "set_value", ref: "r7", value: "42"}, {type: "activate", ref: "w3"}]}
 // act step types: click, type, keypress, set_value, select, scroll, activate, close, wait
-// activate and close take ref wN or title; one act works in one window
+// activate and close take ref wN or title; activate switches the batch target
+// later refs and ref-less steps use that window; activate back before reusing old-window refs
 // query fields: role, name_equals, name_contains, text_equals, text_contains, state
 {actions: [{type: "scroll", x: 640, y: 412, scroll_y: -3}]}   // GUI; scroll_x or scroll_y, non-zero
 ```

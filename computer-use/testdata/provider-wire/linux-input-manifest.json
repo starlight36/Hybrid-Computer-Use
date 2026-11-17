@@ -1,0 +1,9 @@
+{
+  "schema_version": 2,
+  "protocol": "computer-use-provider",
+  "allow_global_input_platforms": {"linux": true, "darwin": false, "windows": false},
+  "fixtures": [
+    {"name": "background-click", "direction": "request", "file": "background-click.request.json"},
+    {"name": "background-scroll", "direction": "request", "file": "background-scroll.request.json"}
+  ]
+}

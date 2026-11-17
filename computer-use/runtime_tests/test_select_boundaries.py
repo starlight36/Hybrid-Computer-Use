@@ -865,12 +865,14 @@ class DropdownCommitTests(SelectBoundaryTests):
     def test_gtk_combo_commits_through_its_own_selection_without_keys(self):
         # GTK: Selection.select_child on the combo box sets its active item;
         # on the popup menu it only highlights the item.
-        combo = _Node(role="combo box", name="Beijing")
+        combo = _Node(role="combo box", name="Beijing",
+                      states=(STATE.ENABLED, STATE.SENSITIVE))
         combo.app.get_toolkit_name.return_value = "gtk"
         combo.get_application = lambda: combo.app
         menu = _Node(role="menu", x=-2147483648, y=-2147483648, w=1, h=1)
         combo.add(menu)
-        items = [_Node(role="menu item", name=name)
+        items = [_Node(role="menu item", name=name,
+                       states=(STATE.ENABLED, STATE.SENSITIVE))
                  for name in ("Beijing", "Shanghai", "Seattle")]
         menu.add(*items)
         combo.selection_iface = mock.Mock()
@@ -917,13 +919,16 @@ class DropdownCommitTests(SelectBoundaryTests):
         self.assertEqual(runtime.element_value(combo), "Seattle")
 
     def _gtk_named_combo(self):
-        combo = _Node(role="combo box", name="Seattle")
+        combo = _Node(role="combo box", name="Seattle",
+                      states=(STATE.ENABLED, STATE.SENSITIVE))
         combo.app.get_toolkit_name.return_value = "gtk"
         combo.get_application = lambda: combo.app
         combo.selection_iface = combo
         menu = _Node(role="menu", states=(), w=0, h=0)
         combo.add(menu)
-        items = [_Node(role="menu item", name=name) for name in ("Beijing", "Seattle")]
+        items = [_Node(role="menu item", name=name,
+                       states=(STATE.ENABLED, STATE.SENSITIVE))
+                 for name in ("Beijing", "Seattle")]
         menu.add(*items)
         # The accessible label and popup highlight both disagree with active.
         items[1].states.add(STATE.SELECTED)

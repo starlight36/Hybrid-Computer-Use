@@ -64,6 +64,8 @@ type windowSelection struct {
 }
 
 type ElementRecord struct {
+	TextTruncated                   []string                      `json:"textTruncated,omitempty"`
+	TextLengths                     map[string]int                `json:"textLengths,omitempty"`
 	Index                           int                           `json:"index"`
 	RuntimeID                       []int                         `json:"runtimeId,omitempty"`
 	RuntimeIDAliases                [][]int                       `json:"runtimeAliases,omitempty"`
@@ -286,6 +288,9 @@ func (s *AppSnapshot) renderedText() string {
 	if len(s.Windows) > 1 {
 		lines = append(lines, "windows:")
 		lines = append(lines, renderedWindowInventory(s.Windows)...)
+	}
+	if note := s.contentUnavailableNote(); note != "" {
+		lines = append(lines, note)
 	}
 	if normalizedAXScope(s.Scope) == contract.AXScopeContent && s.scopeRoot != nil {
 		lines = append(lines, fmt.Sprintf(

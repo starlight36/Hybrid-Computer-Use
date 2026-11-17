@@ -83,6 +83,9 @@ const (
 	ArgumentRuleTextBudget      = "text_budget"
 	ArgumentRuleRefOwnsIdentity = "ref_owns_identity"
 	ArgumentRuleWaitBudget      = "wait_budget"
+	// ArgumentRuleOneInputStep is the batching ablation's limit of one
+	// input step per act.
+	ArgumentRuleOneInputStep = "one_input_step"
 )
 
 // ArgumentRuleError is a cross-field rule violation.

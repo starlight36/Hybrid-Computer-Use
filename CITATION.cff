@@ -38,8 +38,8 @@ authors:
   - given-names: Yan
     family-names: Lu
     affiliation: Microsoft Research
-version: 1.0.0
-date-released: 2026-10-30
+version: 1.0.1
+date-released: 2026-11-17
 license:
   - MIT
   - Apache-2.0

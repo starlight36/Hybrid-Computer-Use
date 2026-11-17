@@ -24,6 +24,7 @@
     {"name": "window-list", "direction": "request", "file": "window-list.request.json"},
     {"name": "window-action", "direction": "request", "file": "window-action.request.json"},
     {"name": "accessibility-success", "direction": "response", "file": "accessibility-success.response.json"},
+    {"name": "modal-scope", "direction": "response", "file": "modal-scope.response.json"},
     {"name": "observe-apps-partial", "direction": "response", "file": "observe-apps-partial.response.json"},
     {"name": "desktop-success", "direction": "response", "file": "desktop-success.response.json"},
     {"name": "window-success", "direction": "response", "file": "window-success.response.json"},

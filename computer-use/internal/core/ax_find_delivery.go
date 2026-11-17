@@ -63,6 +63,9 @@ func FindMatchUnit(snapshot *AXSnapshot, record ElementRecord, ordinal int) stri
 		display := findDisplayNode(node)
 		fmt.Fprintf(&out, " - match=%d %s\n", ordinal, renderAXNodeLabel(display))
 		for _, property := range renderAXProperties(display, AXRenderOptions{}) {
+			if property[0] == "/text" {
+				continue
+			}
 			out.WriteString(renderAXTreePropertyLine(property, 2) + "\n")
 		}
 	} else {

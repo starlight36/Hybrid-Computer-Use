@@ -130,6 +130,7 @@ class SDKAgainstDaemon(unittest.TestCase):
         builder.observe("w1", observe="tree")
         builder.observe("w1", observe="full")
         builder.observe("w1", observe="screenshot")
+        builder.observe(root="r1", read_text={"field": "value", "start": 0, "limit": 4000})
         builder.wait({"window": "Saved", "timeout_ms": 1})
         builder.wait({"ref": "r1", "state": "checked"}, window_ref="w1")
         builder.wait({"query": {"role": "dialog"}, "gone": True, "timeout_ms": 1})

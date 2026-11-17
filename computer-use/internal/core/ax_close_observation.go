@@ -17,10 +17,12 @@ func closedWindowFinalObservation(
 	if windowRef != "" {
 		refLine = "\n absent_refs: [" + windowRef + "]"
 	}
-	result := TextResult(
-		"ax_diff:\n effect: target_window_absent"+refLine,
-		false,
-	)
+	text := "ax_diff:\n effect: target_window_absent" + refLine
+	if contract.Ablated(contract.AblateDiff) {
+		// The current state, without the diff format.
+		text = "window: null" + strings.Replace(refLine, "\n ", "\n", 1)
+	}
+	result := TextResult(text, false)
 	result.StructuredContent = map[string]any{
 		"full_tree_returned":                   false,
 		"tree_reference_only":                  false,

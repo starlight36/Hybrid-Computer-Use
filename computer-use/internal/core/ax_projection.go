@@ -539,10 +539,10 @@ func resolveProviderBoundObservationRoot(
 	}
 	if strings.TrimSpace(entry.WindowHandle) == "" ||
 		entry.WindowHandle != snapshot.WindowHandle {
-		return nil, errors.New(
-			"stale_window: root ref belongs to a different window; " +
+		return nil, &axRefLifecycleError{kind: "window", lifecycle: AXRefStale,
+			message: "stale_window: root ref belongs to a different window; " +
 				"observe or find the target again",
-		)
+		}
 	}
 	matches := make([]*ElementRecord, 0, 2)
 	for index := range snapshot.Elements {
@@ -565,17 +565,17 @@ func resolveProviderBoundObservationRoot(
 	}
 	switch len(matches) {
 	case 0:
-		return nil, errors.New(
-			"stale_element_ref: the provider-bound root is no longer present; " +
+		return nil, &axRefLifecycleError{kind: "element", lifecycle: AXRefStale,
+			message: "stale_element_ref: the provider-bound root is no longer present; " +
 				"use find to obtain a current ref",
-		)
+		}
 	case 1:
 		return matches[0], nil
 	default:
-		return nil, errors.New(
-			"ambiguous_target: the provider-bound root does not identify one " +
+		return nil, &axRefLifecycleError{kind: "element", lifecycle: AXRefStale,
+			message: "ambiguous_target: the provider-bound root does not identify one " +
 				"current canonical element; use find to obtain a current ref",
-		)
+		}
 	}
 }
 

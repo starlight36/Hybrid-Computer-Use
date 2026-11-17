@@ -121,6 +121,10 @@ func axNodeRefEligibility(
 	}
 
 	if !axNodeHasInteractionSemantics(node) {
+		if axNodeProviderIdentityComplete(node) &&
+			(node.Properties.Value != "" || len(node.Properties.TextTruncated) > 0) {
+			return true, "", AXLocatorProviderBound
+		}
 		return false, "interaction_semantics_unknown", ""
 	}
 	if axNodeIsUnnamedEditor(node) {

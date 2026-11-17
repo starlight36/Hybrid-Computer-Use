@@ -5,6 +5,7 @@ from . import cursor
 import time
 from .foundation import (
     Atspi,
+    Gdk,
     FOCUS_GRAB_CANDIDATES,
     node_name,
     node_pid,
@@ -229,6 +230,25 @@ def emit_mouse_event(x, y, event, events_emitted=False):
     return emitted
 
 
+def keypad_navigation_numlock_mask(symbol):
+    if not Gdk.KEY_KP_Home <= symbol <= Gdk.KEY_KP_Delete:
+        return 0
+    keymap = Gdk.Keymap.get_default()
+    state = int(Gdk.get_default_root_window().get_pointer().mask)
+    available, entries = keymap.get_entries_for_keyval(symbol)
+    for entry in entries if available else []:
+        for bit in range(3, 8):
+            mask = 1 << bit
+            if not state & mask:
+                continue
+            translated = keymap.translate_keyboard_state(
+                entry.keycode, Gdk.ModifierType(mask), entry.group)
+            if translated[0] and (Gdk.KEY_KP_0 <= translated[1] <= Gdk.KEY_KP_9
+                                  or translated[1] == Gdk.KEY_KP_Decimal):
+                return mask
+    return 0
+
+
 def emit_keyboard_event(
     keyval,
     keystring,
@@ -236,7 +256,12 @@ def emit_keyboard_event(
     description,
     events_emitted=False,
 ):
-    result = Atspi.generate_keyboard_event(keyval, keystring, synth_type)
+    try:
+        result = Atspi.generate_keyboard_event(keyval, keystring, synth_type)
+    except Exception as exc:
+        exc.events_emitted = bool(events_emitted or getattr(exc, "events_emitted", False))
+        exc.partial_input_possible = True
+        raise
     return require_input_emission(result, description, events_emitted)
 
 

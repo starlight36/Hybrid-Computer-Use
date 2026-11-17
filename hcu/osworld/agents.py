@@ -16,7 +16,14 @@ import urllib.parse
 
 from hcu.osworld.guest import (
     GUEST_CLAUDE_MCP_ADAPTER,
+    GUEST_GUARD_LOG,
     GUEST_MCP,
+)
+from hcu.osworld.guide_ablation import (
+    ABLATION_ENV,
+    GUARD_LOG_ENV,
+    ablation_value,
+    parse_ablation,
 )
 
 
@@ -116,6 +123,33 @@ def public_tools(channels: str) -> tuple[str, ...]:
     return CHANNEL_TOOLS[channels]
 
 
+def mcp_server_env(channels: str = "", ablate: tuple[str, ...] = ()) -> dict[str, str]:
+    """Environment of the computer-use MCP server.
+
+    A variable is set only when it changes the server, so the client config
+    of a run without a channel restriction or ablation has no MCP env. With
+    ``guard`` ablated the server requires a log for the guard decisions; the
+    runner collects it from the guest.
+    """
+    public_tools(channels)
+    if tuple(ablate) != parse_ablation(ablate):
+        raise ValueError(f"ablate must be in canonical order, got {ablate!r}")
+    env = {"COMPUTER_USE_CHANNELS": channels} if channels else {}
+    if ablate:
+        env[ABLATION_ENV] = ablation_value(ablate)
+    if "guard" in ablate:
+        env[GUARD_LOG_ENV] = GUEST_GUARD_LOG
+    return env
+
+
+def _toml_env_table(env: dict[str, str]) -> str:
+    if not env:
+        return ""
+    return "\n[mcp_servers.computer_use.env]\n" + "".join(
+        f"{key} = {_toml_string(value)}\n" for key, value in env.items()
+    )
+
+
 def _toml_string(value: str) -> str:
     # JSON's UTF-16 surrogate escapes are not valid TOML Unicode escapes.
     return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007f")
@@ -130,6 +164,7 @@ def codex_config(
     base_instructions: str,
     mcp_command: str,
     channels: str = "",
+    ablate: tuple[str, ...] = (),
     developer_instructions: str | None = None,
     execution_context: Literal["standalone", "isolated-guest"] = "standalone",
     code_mode: bool = False,
@@ -155,12 +190,7 @@ def codex_config(
             "execution_context must be standalone or isolated-guest, "
             f"got {execution_context!r}"
         )
-    public_tools(channels)
-    mcp_env = (
-        f'\n[mcp_servers.computer_use.env]\nCOMPUTER_USE_CHANNELS = {_toml_string(channels)}\n'
-        if channels
-        else ""
-    )
+    mcp_env = _toml_env_table(mcp_server_env(channels, ablate))
     disabled_system_skills = "\n\n".join(
         (
             "[[skills.config]]\n"
@@ -281,17 +311,18 @@ def claude_mcp_config(
     adapter: str = GUEST_CLAUDE_MCP_ADAPTER,
     mcp_command: str = GUEST_MCP,
     channels: str = "",
+    ablate: tuple[str, ...] = (),
     python_executable: str = "/usr/bin/python3",
 ) -> str:
     """Claude Code MCP configuration that runs the MCP behind the adapter."""
-    public_tools(channels)
+    env = mcp_server_env(channels, ablate)
     server: dict = {
         "type": "stdio",
         "command": python_executable,
         "args": [adapter, mcp_command, "mcp"],
     }
-    if channels:
-        server["env"] = {"COMPUTER_USE_CHANNELS": channels}
+    if env:
+        server["env"] = env
     return json.dumps({"mcpServers": {"computer_use": server}}, indent=2) + "\n"
 
 
@@ -343,6 +374,7 @@ def gemini_settings(
     effort: str,
     mcp_command: str = GUEST_MCP,
     channels: str = "",
+    ablate: tuple[str, ...] = (),
 ) -> str:
     """Gemini CLI ``settings.json`` with ambient features off and the MCP allowed.
 
@@ -351,7 +383,7 @@ def gemini_settings(
     loaded as context, and it carries the profile; directory discovery is off.
     ``effort`` is a Gemini thinking level, or ``native`` for the model default.
     """
-    public_tools(channels)
+    env = mcp_server_env(channels, ablate)
     if effort != "native" and effort not in GEMINI_THINKING_LEVELS:
         raise ValueError(
             "Gemini CLI effort must be native or a thinking level ("
@@ -363,8 +395,8 @@ def gemini_settings(
         "timeout": 180000,
         "trust": False,
     }
-    if channels:
-        server["env"] = {"COMPUTER_USE_CHANNELS": channels}
+    if env:
+        server["env"] = env
     settings = {
         # The gateway enforces the model-call budget; the CLI has no turn cap.
         "model": {"name": model, "maxSessionTurns": -1},
@@ -388,7 +420,9 @@ def gemini_settings(
         "mcp": {"allowed": [GEMINI_MCP_SERVER]},
         "security": {
             "auth": {"selectedType": "gemini-api-key", "enforcedType": "gemini-api-key"},
-            "environmentVariableRedaction": {"allowed": ["COMPUTER_USE_CHANNELS"]},
+            "environmentVariableRedaction": {"allowed": [
+                "COMPUTER_USE_CHANNELS", *(key for key in env if key != "COMPUTER_USE_CHANNELS"),
+            ]},
         },
         "context": {
             "fileName": "GEMINI.md",
@@ -424,19 +458,15 @@ def grok_config(
     effort: str,
     mcp_command: str = GUEST_MCP,
     channels: str = "",
+    ablate: tuple[str, ...] = (),
 ) -> str:
     """Grok Build ``config.toml`` bound to the task gateway with ambient features off.
 
     The model is registered under the key ``gateway`` so the CLI never
     contacts x.ai directly; the gateway URL already carries the task path.
     """
-    public_tools(channels)
     q = _toml_string
-    mcp_env = (
-        f"\n[mcp_servers.computer_use.env]\nCOMPUTER_USE_CHANNELS = {q(channels)}\n"
-        if channels
-        else ""
-    )
+    mcp_env = _toml_env_table(mcp_server_env(channels, ablate))
     off = lambda *keys: "\n".join(f"{key} = false" for key in keys)  # noqa: E731
     return f"""\
 [cli]

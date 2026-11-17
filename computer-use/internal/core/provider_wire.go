@@ -413,6 +413,9 @@ func ValidateProviderObserveAppsRequest(request ProviderObserveAppsRequest) erro
 }
 
 func ValidateProviderObserveRequest(request ProviderObserveRequest) error {
+	if request.Observation.TextRead != nil {
+		return errors.New("text_read requires resolve_target")
+	}
 	if err := validateProviderProtocolVersion(request.ProtocolVersion); err != nil {
 		return err
 	}
@@ -425,6 +428,12 @@ func ValidateProviderObserveRequest(request ProviderObserveRequest) error {
 func validateProviderObservationOptions(
 	observation ProviderObservationOptions,
 ) error {
+	if read := observation.TextRead; read != nil {
+		if !contract.ContainsString([]string{"name", "value", "description"}, read.Field) ||
+			read.Start < 0 || read.Start > 2147483647 || read.Limit < 1 || read.Limit > contract.AXMaxReadText {
+			return errors.New("invalid provider text_read field, start, or limit")
+		}
+	}
 	if observation.TextLimit != nil &&
 		!observation.TextLimit.Max &&
 		observation.TextLimit.Value <= 0 {
@@ -470,6 +479,9 @@ func ValidateProviderActionRequest(request ProviderActionRequest) error {
 	}
 	if !validAccessibilityOperation(request.Intent) {
 		return fmt.Errorf("unsupported provider accessibility intent %q", request.Intent)
+	}
+	if request.Observation.TextRead != nil && request.Intent != AccessibilityResolveTarget {
+		return errors.New("text_read requires resolve_target")
 	}
 	if strings.TrimSpace(request.App) == "" {
 		return errors.New("provider accessibility app is required")
@@ -735,6 +747,9 @@ func ValidateProviderWindowListRequest(request ProviderWindowListRequest) error 
 func ValidateProviderWindowActionRequest(
 	request ProviderWindowActionRequest,
 ) error {
+	if request.Observation.TextRead != nil {
+		return errors.New("text_read requires resolve_target")
+	}
 	if err := validateProviderProtocolVersion(request.ProtocolVersion); err != nil {
 		return err
 	}

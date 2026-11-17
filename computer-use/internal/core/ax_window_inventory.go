@@ -268,10 +268,14 @@ func (s *Service) resolveFocusedWindow() (*axDesktopWindow, *axArgError) {
 			return &inventory.windows[index], nil
 		}
 	}
+	start := "Start the batch with activate. "
+	if contract.Ablated(contract.AblateBatching) {
+		start = "Activate a window in its own call first. "
+	}
 	return nil, &axArgError{
 		Code: contract.AXCodeNoFocusedWindow,
 		Message: "no application window has keyboard focus, so keys or text without ref have no target. " +
-			"Start the batch with activate. Windows:\n" + inventory.text,
+			start + "Windows:\n" + inventory.text,
 		Hint: `{"type":"activate","title":"window title"}`,
 	}
 }

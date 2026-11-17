@@ -215,7 +215,7 @@ func handleMCPRequest(request map[string]any, svc *core.Service) map[string]any 
 				"version": contract.ServerVersion,
 			},
 			"capabilities": map[string]any{"tools": map[string]any{"listChanged": false}},
-			"instructions": contract.ServerInstructions,
+			"instructions": contract.PublishedServerInstructions(),
 		})
 	case "ping":
 		return jsonRPCResult(id, map[string]any{})

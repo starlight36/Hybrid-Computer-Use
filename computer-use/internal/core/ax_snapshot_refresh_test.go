@@ -6,6 +6,43 @@ import (
 	"time"
 )
 
+func TestProviderBoundRootFailurePreservesPublicError(t *testing.T) {
+	for _, failure := range []string{"missing", "ambiguous", "different window"} {
+		t.Run(failure, func(t *testing.T) {
+			service := NewServiceWithBackend(&recordingPlatformBackend{})
+			original := anonymousRootFixture("panel", true)
+			if err := service.BuildAndRenderAXSnapshot(original, "working"); err != nil {
+				t.Fatal(err)
+			}
+			found := service.freezeFindRefs(original, []ElementRecord{original.Elements[1]})
+			root, err := service.expandObservationRootShortRef("Editor", map[string]any{"ref": found.AXSnapshot.ByIndex[1].Ref})
+			if err != nil {
+				t.Fatal(err)
+			}
+			snapshot := anonymousRootFixture("panel", true)
+			switch failure {
+			case "missing":
+				snapshot.Elements = append(snapshot.Elements[:1], snapshot.Elements[2:]...)
+			case "ambiguous":
+				snapshot.Elements = append(snapshot.Elements, snapshot.Elements[1])
+			case "different window":
+				snapshot.WindowHandle = reportOtherHandle
+			}
+			_, result := service.prepareProviderSnapshot(AXServiceRequest{
+				App: "Editor", ObservationRoot: root,
+			}, &ProviderAccessibilityResult{OK: true, Snapshot: snapshot})
+			public := PrepareAXEvidence(result).StructuredContent
+			if !result.IsError || public["code"] != "stale_ref" || public["input_emitted"] != false || public["path"] != "root" {
+				t.Errorf("lost root failure identity: %#v", public)
+			}
+			hint := decodeJSONForTest(t, public["hint"].(string))
+			if hint["mode"] != "observe" || hint["app"] != "Editor" || hint["root"] != nil {
+				t.Errorf("root recovery must observe the app without the invalid root: %#v", hint)
+			}
+		})
+	}
+}
+
 func TestActionResultFlagsUnchangedState(t *testing.T) {
 	base := func() *AppSnapshot {
 		return &AppSnapshot{

@@ -17,6 +17,7 @@ type AXServiceRequest struct {
 	WindowAction       *WindowOperation       `json:"-"`
 	WindowBounds       *frame                 `json:"windowBounds,omitempty"`
 	TextLimit          any                    `json:"text_limit,omitempty"`
+	TextRead           *ProviderTextRead      `json:"-"`
 	MaxTreeNodes       int                    `json:"max_tree_nodes,omitempty"`
 	MaxTreeDepth       int                    `json:"max_tree_depth,omitempty"`
 	Prune              *bool                  `json:"prune,omitempty"`
@@ -66,11 +67,12 @@ func (axResolveTargetCommand) applyProviderAction(*ProviderActionRequest) {}
 func (axResolveTargetCommand) appendTraceFields(map[string]any) {}
 
 type AXClickCommand struct {
-	X           *float64
-	Y           *float64
-	ClickCount  int
-	MouseButton string
-	ClickMethod string
+	AllowGlobalInput *bool
+	X                *float64
+	Y                *float64
+	ClickCount       int
+	MouseButton      string
+	ClickMethod      string
 }
 
 func (AXClickCommand) Intent() AccessibilityOperation {
@@ -81,15 +83,19 @@ func (command AXClickCommand) applyProviderAction(
 	request *ProviderActionRequest,
 ) {
 	request.Click = &ProviderClickInput{
-		X:           command.X,
-		Y:           command.Y,
-		ClickCount:  command.ClickCount,
-		MouseButton: command.MouseButton,
-		ClickMethod: command.ClickMethod,
+		AllowGlobalInput: command.AllowGlobalInput,
+		X:                command.X,
+		Y:                command.Y,
+		ClickCount:       command.ClickCount,
+		MouseButton:      command.MouseButton,
+		ClickMethod:      command.ClickMethod,
 	}
 }
 
 func (command AXClickCommand) appendTraceFields(fields map[string]any) {
+	if command.AllowGlobalInput != nil {
+		fields["allow_global_input"] = *command.AllowGlobalInput
+	}
 	fields["x"] = command.X
 	fields["y"] = command.Y
 	fields["click_count"] = command.ClickCount
@@ -98,9 +104,10 @@ func (command AXClickCommand) appendTraceFields(fields map[string]any) {
 }
 
 type axScrollCommand struct {
-	Direction    string
-	Pages        float64
-	WindowCentre bool
+	AllowGlobalInput *bool
+	Direction        string
+	Pages            float64
+	WindowCentre     bool
 }
 
 func (axScrollCommand) Intent() AccessibilityOperation {
@@ -111,13 +118,17 @@ func (command axScrollCommand) applyProviderAction(
 	request *ProviderActionRequest,
 ) {
 	request.Scroll = &ProviderScrollInput{
-		Direction:    command.Direction,
-		Pages:        command.Pages,
-		WindowCentre: command.WindowCentre,
+		AllowGlobalInput: command.AllowGlobalInput,
+		Direction:        command.Direction,
+		Pages:            command.Pages,
+		WindowCentre:     command.WindowCentre,
 	}
 }
 
 func (command axScrollCommand) appendTraceFields(fields map[string]any) {
+	if command.AllowGlobalInput != nil {
+		fields["allow_global_input"] = *command.AllowGlobalInput
+	}
 	fields["direction"] = command.Direction
 	fields["pages"] = command.Pages
 	fields["window_centre"] = command.WindowCentre

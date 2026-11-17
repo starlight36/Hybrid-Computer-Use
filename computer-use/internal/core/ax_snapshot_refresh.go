@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/microsoft/Hybrid-Computer-Use/computer-use/internal/contract"
 )
 
 func (s *Service) currentSnapshot(app string) *AppSnapshot {
@@ -148,6 +150,14 @@ func (s *Service) prepareProviderSnapshot(
 		response.Snapshot,
 		request.ObservationRoot,
 	); err != nil {
+		var lifecycle *axRefLifecycleError
+		if errors.As(err, &lifecycle) {
+			result := withAXLifecycleFailure(TextResult(err.Error(), true), err)
+			result.StructuredContent[contract.AXPublicErrorPathKey] = "root"
+			result.StructuredContent[contract.AXPublicErrorHintKey] = contract.CompactJSON(
+				map[string]any{"mode": contract.AXModeObserve, "app": request.App})
+			return nil, result.withEvidenceScope("error_only")
+		}
 		return nil, TextResult(err.Error(), true).
 			withEvidenceScope("error_only")
 	}

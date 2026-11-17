@@ -83,7 +83,7 @@ def native_only_windows(managed, accessible_coverage, active_window_id=None,
         title = str(window.get("title") or "").strip()
         width = int(window.get("width") or 0)
         height = int(window.get("height") or 0)
-        if pid <= 0 or not title:
+        if not title:
             continue
         if width <= 0 or height <= 0:
             continue
@@ -91,12 +91,15 @@ def native_only_windows(managed, accessible_coverage, active_window_id=None,
                 or int(window.get("y") or 0) + height <= 0):
             continue
         handle = window_handle_for_pid(pid, window.get("id"))
-        if not handle:
-            continue
         coverage = accessible_coverage.get(pid, {})
-        if handle in coverage.get("handles", set()):
+        if handle and handle in coverage.get("handles", set()):
             continue
         if x11_window_type(window.get("id")) not in APPLICATION_WINDOW_TYPES:
+            continue
+        if not handle:
+            errors.append(
+                'The process identity of window "{}" is unavailable; '
+                "it cannot be addressed safely.".format(title))
             continue
         if not coverage.get("complete", True):
             errors.append(

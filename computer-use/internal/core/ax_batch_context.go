@@ -34,16 +34,65 @@ const (
 	axWindowUnknown axWindowContinuity = "unknown"
 )
 
-// deriveAXBatchContext binds a batch to one logical window. The window
-// comes from the actions' rN/wN refs, from window_ref, or, for a batch whose
-// actions carry no ref, from the window that holds keyboard focus. A
-// window_ref that names the same window as the refs is accepted; a
-// different one is rejected. focus is the focused window read before any
-// input; it is used only when nothing else names a window.
+func axBatchWindowEnd(actions []axBatchAction, start int) int {
+	for index := start + 1; index < len(actions); index++ {
+		if actions[index].actionType == "activate" {
+			return index
+		}
+	}
+	return len(actions)
+}
+
+func (s *Service) deriveAXBatchContexts(
+	explicitWindowRef string,
+	actions []axBatchAction,
+	focus *axDesktopWindow,
+) ([]*AXBatchContext, error) {
+	contexts := make([]*AXBatchContext, len(actions))
+	for start := 0; start < len(actions); {
+		end := axBatchWindowEnd(actions, start)
+		windowRef := explicitWindowRef
+		if actions[start].actionType == "activate" {
+			windowRef = actions[start].targetRef
+		}
+		context, err := s.deriveAXWindowContext(windowRef, actions[start:end], focus, start)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.validateAXNoTreeSegment(context, actions[start:end], start); err != nil {
+			return nil, err
+		}
+		for index := start; index < end; index++ {
+			contexts[index] = context
+			if actions[index].wait != nil && actions[index].wait.ref != "" {
+				if err := s.preflightAXWaitRef(context, actions[index].wait.ref); err != nil {
+					return nil, axBatchRefError(index, "ref", err)
+				}
+			}
+			if actions[index].toRef != "" {
+				if err := s.preflightAXWaitRef(context, actions[index].toRef); err != nil {
+					return nil, axBatchRefError(index, "to_ref", err)
+				}
+			}
+		}
+		start = end
+	}
+	return contexts, nil
+}
+
 func (s *Service) deriveAXBatchContext(
 	explicitWindowRef string,
 	actions []axBatchAction,
 	focus *axDesktopWindow,
+) (*AXBatchContext, error) {
+	return s.deriveAXWindowContext(explicitWindowRef, actions, focus, 0)
+}
+
+func (s *Service) deriveAXWindowContext(
+	explicitWindowRef string,
+	actions []axBatchAction,
+	focus *axDesktopWindow,
+	actionOffset int,
 ) (*AXBatchContext, error) {
 	context := &AXBatchContext{}
 	bindWindow := func(ref, handle, appRef, appIdentity string) error {
@@ -51,9 +100,9 @@ func (s *Service) deriveAXBatchContext(
 		handle = strings.TrimSpace(handle)
 		if context.WindowHandle != "" && context.WindowHandle != handle {
 			return axInvalid("", fmt.Sprintf(
-				"batch spans two windows (%s and %s); one act call works in one window, so split it",
-				context.WindowRef, ref),
-				"Split the actions into separate act calls, one window per call.",
+				"ref belongs to window %s, not the current batch window %s; activate that window before using its refs",
+				ref, context.WindowRef),
+				"Use refs from the current window, or activate the other window before acting in it.",
 			)
 		}
 		if context.WindowRef == "" {
@@ -93,7 +142,7 @@ func (s *Service) deriveAXBatchContext(
 			if err == nil {
 				err = bindWindow(entry.LogicalWindowRef, entry.WindowHandle,
 					entry.AppRef, entry.AppIdentity)
-				if err != nil && explicitWindowRef != "" && index == 0 {
+				if err != nil && explicitWindowRef != "" && index == 0 && actionOffset == 0 {
 					err = axInvalid("window_ref", fmt.Sprintf("%s belongs to window %s, not window_ref %s; omit window_ref",
 						address, entry.LogicalWindowRef, explicitWindowRef),
 						"Omit window_ref so the action refs determine the window, or use refs from window_ref.")
@@ -107,11 +156,7 @@ func (s *Service) deriveAXBatchContext(
 			}
 		}
 		if err != nil {
-			var argument *axArgError
-			if errors.As(err, &argument) && argument.path == "" {
-				argument.path = fmt.Sprintf("actions[%d].ref", index)
-			}
-			return nil, fmt.Errorf("actions[%d].ref: %w", index, err)
+			return nil, axBatchRefError(actionOffset+index, "ref", err)
 		}
 	}
 	if context.WindowHandle == "" && !hasTarget && focus != nil {
@@ -143,11 +188,23 @@ func (s *Service) deriveAXBatchContext(
 	return context, nil
 }
 
+func axBatchRefError(index int, field string, err error) error {
+	path := fmt.Sprintf("actions[%d].%s", index, field)
+	var argument *axArgError
+	if errors.As(err, &argument) && argument.path == "" {
+		argument.path = path
+	}
+	return fmt.Errorf("%s: %w", path, err)
+}
+
 func (s *Service) axBatchWindowContinuity(
 	context *AXBatchContext,
 ) axWindowContinuity {
 	if s == nil || context == nil || strings.TrimSpace(context.WindowHandle) == "" {
 		return axWindowUnknown
+	}
+	if continuity, native := s.axNoTreeBatchWindowContinuity(context); native {
+		return continuity
 	}
 	snapshot := s.currentSnapshot(context.AppToken)
 	if snapshot == nil {
@@ -182,6 +239,27 @@ func (s *Service) axBatchWindowContinuity(
 	return axWindowSame
 }
 
+func (s *Service) validateAXActionWindow(context *AXBatchContext, action axBatchAction, index int) error {
+	for _, target := range []struct{ field, ref string }{{"ref", action.targetRef}, {"to_ref", action.toRef}} {
+		if isShortAXRef(target.ref) {
+			if err := s.preflightAXWaitRef(context, target.ref); err != nil {
+				return axBatchRefError(index, target.field, err)
+			}
+		} else if isShortAXWindowRef(target.ref) && action.actionType != "activate" {
+			entry, err := s.resolveShortAXWindowRefOwned(target.ref)
+			if err != nil {
+				return axBatchRefError(index, target.field, err)
+			}
+			if entry.WindowHandle != context.WindowHandle {
+				return axBatchRefError(index, target.field, axInvalid("", fmt.Sprintf(
+					"%s belongs to another window, not the current batch window %s", target.ref, context.WindowRef),
+					"Activate that window before acting in it."))
+			}
+		}
+	}
+	return nil
+}
+
 // axBatchFocusChanged reports whether keyboard focus left the window a
 // focus-bound batch was bound to, and if so returns the stop result.
 func (s *Service) axBatchFocusChanged(
@@ -191,6 +269,11 @@ func (s *Service) axBatchFocusChanged(
 ) (ToolCallResult, bool) {
 	focus, argErr := s.resolveFocusedWindow()
 	if argErr == nil && focus.handle == context.WindowHandle {
+		return ToolCallResult{}, false
+	}
+	if shadowGuard("ax", "batch_window", "focus_left_bound_window", map[string]any{
+		"window_ref": context.WindowRef, "next_action_index": index,
+	}) {
 		return ToolCallResult{}, false
 	}
 	now := "no window has focus"

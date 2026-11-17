@@ -7,6 +7,7 @@ import runtimebundle "github.com/microsoft/Hybrid-Computer-Use/computer-use"
 var linuxProviderPaths = []string{
 	"native/linux/provider/foundation.py",
 	"native/linux/provider/cursor.py",
+	"native/linux/provider/guard_shadow.py",
 	"native/linux/provider/node_geometry.py",
 	"native/linux/provider/node_visibility.py",
 	"native/linux/provider/a11y_enable.py",
@@ -14,6 +15,7 @@ var linuxProviderPaths = []string{
 	"native/linux/provider/x11_windows.py",
 	"native/linux/provider/desktop_layout.py",
 	"native/linux/provider/x11_window_inventory.py",
+	"native/linux/provider/x11_client_identity.py",
 	"native/linux/provider/window_scale.py",
 	"native/linux/provider/atspi_inventory.py",
 	"native/linux/provider/ax_node_properties.py",
@@ -44,6 +46,7 @@ var linuxProviderPaths = []string{
 	"native/linux/provider/input_method.py",
 	"native/linux/provider/ax_actions.py",
 	"native/linux/provider/ax_select.py",
+	"native/linux/provider/ax_semantic_scroll.py",
 	"native/linux/provider/ax_dropdown.py",
 	"native/linux/provider/ax_dispatch.py",
 	"native/linux/provider/ax_input_delivery.py",

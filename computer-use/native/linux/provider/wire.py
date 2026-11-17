@@ -98,6 +98,7 @@ def _accessibility_result(response):
         ("apps", "apps"),
         ("inventory_issues", "inventory_issues"),
         ("resolvedElement", "resolved_element"),
+        ("textRead", "text_read"),
         ("candidates", "candidates"),
         ("candidateCount", "candidate_count"),
         ("candidatesTruncated", "candidates_truncated"),

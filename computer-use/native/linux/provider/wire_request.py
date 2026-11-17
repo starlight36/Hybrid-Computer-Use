@@ -53,6 +53,7 @@ def _strict_object(
 
 OBSERVATION_FIELDS = {
     "text_limit",
+    "text_read",
     "max_tree_nodes",
     "max_tree_depth",
     "prune",
@@ -83,8 +84,8 @@ TARGET_FIELDS = {
 PREDICATE_FIELDS = {"kind", "value"}
 ACTION_INPUT_CONTRACTS = {
     "resolve_target": (set(), set()),
-    "click": ({"x", "y", "click_count", "mouse_button", "click_method"}, set()),
-    "scroll": ({"direction", "pages", "window_centre"}, {"direction", "pages"}),
+    "click": ({"x", "y", "click_count", "mouse_button", "click_method", "allow_global_input"}, set()),
+    "scroll": ({"direction", "pages", "window_centre", "allow_global_input"}, {"direction", "pages"}),
     "type": ({"text"}, {"text"}),
     "keypress": ({"key"}, {"key"}),
     "set_value": ({"value", "require_semantic_write"}, {"value"}),
@@ -99,7 +100,7 @@ ELEMENT_FIELDS = {
     "controlType", "localizedControlType", "className", "value",
     "nativeWindowHandle", "frame", "actions", "states", "description",
     "textAttributes", "placeholder", "relations", "relationReadComplete",
-    "nameSource",
+    "nameSource", "textLengths", "textTruncated",
 }
 POINT_FIELDS = {"x", "y"}
 DESKTOP_ACTION_CONTRACTS = {
@@ -157,10 +158,30 @@ def _validate_app_identity(value, path):
         )
 
 
-def _validate_observation(value, path):
+def _validate_observation(value, path, allow_text_read=False):
     if value is None:
         return
     observation = _strict_object(value, path, OBSERVATION_FIELDS)
+    if "text_read" in observation:
+        if not allow_text_read:
+            raise ProviderRequestError(
+                "invalid_provider_request",
+                "{}.text_read requires resolve_target".format(path),
+            )
+        text_read = _strict_object(
+            observation["text_read"], path + ".text_read",
+            {"field", "start", "limit"}, {"field", "start", "limit"},
+        )
+        if (text_read["field"] not in ("name", "value", "description")
+                or type(text_read["start"]) is not int
+                or not 0 <= text_read["start"] <= 2147483647
+                or type(text_read["limit"]) is not int
+                or not 1 <= text_read["limit"] <= 4000):
+            raise ProviderRequestError(
+                "invalid_provider_request",
+                "{}.text_read requires field name/value/description, "
+                "start 0..2147483647 and limit 1..4000 integers".format(path),
+            )
     text_limit = observation.get("text_limit")
     if text_limit is not None:
         valid_limit = (
@@ -432,6 +453,24 @@ def _validate_element(value, path):
     if value is None:
         return
     element = _strict_object(value, path, ELEMENT_FIELDS, ("index",))
+    if "textTruncated" in element:
+        truncated = element["textTruncated"]
+        if (not isinstance(truncated, list)
+                or any(field not in ("name", "value", "description") for field in truncated)):
+            raise ProviderRequestError(
+                "invalid_provider_request",
+                "{}.textTruncated must be an array of name/value/description".format(path),
+            )
+    if "textLengths" in element:
+        lengths = _strict_object(
+            element["textLengths"], path + ".textLengths",
+            {"name", "value", "description"},
+        )
+        if any(type(length) is not int or length < 0 for length in lengths.values()):
+            raise ProviderRequestError(
+                "invalid_provider_request",
+                "{}.textLengths must contain non-negative integers".format(path),
+            )
     if element.get("frame") is not None:
         _strict_object(
             element["frame"], path + ".frame", FRAME_FIELDS, FRAME_FIELDS
@@ -474,6 +513,9 @@ def _validate_action_input(payload):
                 "invalid_provider_request",
                 "untargeted action.{} requires window_handle".format(intent),
             )
+    if "allow_global_input" in input_object and not isinstance(input_object["allow_global_input"], bool):
+        raise ProviderRequestError(
+            "invalid_provider_request", "action.input.allow_global_input must be a boolean")
     if intent == "scroll":
         if input_object["direction"] not in {"up", "down", "left", "right"}:
             raise ProviderRequestError(
@@ -589,7 +631,10 @@ def _validate_payload(operation, payload):
                 FRAME_FIELDS,
                 FRAME_FIELDS,
             )
-        _validate_observation(payload.get("observation"), "action.observation")
+        _validate_observation(
+            payload.get("observation"), "action.observation",
+            allow_text_read=payload["intent"] == "resolve_target",
+        )
         return
     if operation == "desktop_execute_batch":
         payload = _strict_object(

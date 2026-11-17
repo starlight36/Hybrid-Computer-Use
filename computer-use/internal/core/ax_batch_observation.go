@@ -91,6 +91,9 @@ func (s *Service) axBatchFinalObservation(
 	if context == nil || obs.resolvedMode() == contract.ObserveNone {
 		return ToolCallResult{}
 	}
+	if window := s.noTreeWindowEntry(context.WindowRef); window != nil {
+		return axNoTreeBatchObservation(window)
+	}
 	request := AXServiceRequest{
 		Operation:          axServiceObserve,
 		App:                context.AppToken,

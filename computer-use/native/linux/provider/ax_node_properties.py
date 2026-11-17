@@ -7,6 +7,7 @@ from .foundation import (
     DEFAULT_TEXT_LIMIT,
     NON_SELF_ACTIONS,
     OBJECT_REPLACEMENT,
+    OperationFailure,
     UNIVERSAL_ACTIONS,
     child_count,
     limit_text,
@@ -80,7 +81,8 @@ def accessible_id(node):
     return str(safe(getter, "") or "") if callable(getter) else ""
 
 
-def text_value_with_status(node, text_limit=DEFAULT_TEXT_LIMIT):
+def text_value_with_status(node, text_limit=DEFAULT_TEXT_LIMIT, text_lengths=None,
+                           text_truncated=None):
     """Return text plus whether the provider read completed reliably."""
     try:
         text_iface = node.get_text_iface()
@@ -89,8 +91,12 @@ def text_value_with_status(node, text_limit=DEFAULT_TEXT_LIMIT):
     if text_iface is None:
         return "", True
     try:
-        count = int(Atspi.Text.get_character_count(text_iface) or 0)
-        if count <= 0:
+        count = Atspi.Text.get_character_count(text_iface)
+        if type(count) is not int or count < 0:
+            return "", False
+        if count == 0:
+            if text_lengths is not None:
+                text_lengths["value"] = 0
             return "", True
         end_offset = count if text_limit is None else min(count, text_limit + 1)
         value = str(
@@ -98,14 +104,101 @@ def text_value_with_status(node, text_limit=DEFAULT_TEXT_LIMIT):
         )
     except Exception:
         return "", False
+    if len(value) == end_offset:
+        if text_lengths is not None:
+            text_lengths["value"] = count
+        if (text_truncated is not None and text_limit is not None
+                and (count > end_offset
+                     or len(value.replace(OBJECT_REPLACEMENT, "")) > text_limit)):
+            text_truncated.append("value")
     return limit_text(value, text_limit=text_limit), True
 
 
-def text_value(node, text_limit=DEFAULT_TEXT_LIMIT):
+def text_value(node, text_limit=DEFAULT_TEXT_LIMIT, text_lengths=None,
+               text_truncated=None):
     value, _complete = text_value_with_status(
-        node, text_limit=text_limit
+        node, text_limit=text_limit, text_lengths=text_lengths,
+        text_truncated=text_truncated,
     )
     return value
+
+
+def read_element_text(node, options):
+    """Read one codepoint page from the resolved node without emitting input."""
+    field = options["field"]
+    start = options["start"]
+    limit = options["limit"]
+
+    def refuse(reason):
+        raise OperationFailure(
+            "runtime_error: {} text read failed: {}; no input was emitted.".format(
+                field, reason),
+            failure_code="runtime_error",
+            failure_phase="readback",
+            input_events_emitted=False,
+        )
+
+    try:
+        if (field not in ("name", "value", "description")
+                or type(start) is not int or not 0 <= start <= 2147483647
+                or type(limit) is not int or not 1 <= limit <= 4000):
+            refuse("invalid text range")
+        role = node.get_role_name()
+        if not isinstance(role, str) or not role:
+            refuse("unreadable role")
+        if role.strip().lower().replace("_", " ") == "password text":
+            refuse("password text is protected")
+        if field == "value":
+            text_iface = node.get_text_iface()
+            if text_iface is None:
+                refuse("Text interface is unavailable")
+            total = Atspi.Text.get_character_count(text_iface)
+            if type(total) is not int or total < 0:
+                refuse("invalid character count")
+            if start > total:
+                refuse("text start exceeds character count")
+            end = min(total, start + limit)
+            text = Atspi.Text.get_text(text_iface, start, end)
+            after = Atspi.Text.get_character_count(text_iface)
+            if type(after) is not int or after != total:
+                refuse("character count changed during read")
+            if not isinstance(text, str) or len(text) != end - start:
+                refuse("text read length does not match range")
+        else:
+            if field == "name":
+                text = node.get_name()
+                if not isinstance(text, str):
+                    refuse("unreadable name")
+                from .ax_records import (
+                    combo_label, content_name, gtk_combo_partner, labelled_by_name,
+                )
+
+                combo = gtk_combo_partner(node, role)
+                if combo is not None:
+                    text = combo_label(combo, node)[0]
+                elif not text.strip():
+                    text = labelled_by_name(node) or content_name(node, role)
+            else:
+                text = node.get_description()
+                if not isinstance(text, str):
+                    refuse("unreadable description")
+                text = plain_text_from_rich_text(text)
+            total = len(text)
+            if start > total:
+                refuse("text start exceeds character count")
+            end = min(total, start + limit)
+            text = text[start:end]
+    except OperationFailure:
+        raise
+    except Exception as exc:
+        raise OperationFailure(
+            "runtime_error: {} text read failed ({}); no input was emitted.".format(
+                field, type(exc).__name__),
+            failure_code="runtime_error",
+            failure_phase="readback",
+            input_events_emitted=False,
+        ) from exc
+    return {"field": field, "start": start, "end": end, "total": total, "text": text}
 
 
 def numeric_value(node):
@@ -241,24 +334,45 @@ def embedded_editor_text(node, text_limit=DEFAULT_TEXT_LIMIT):
     return limit_text("\n".join(lines), text_limit=text_limit)
 
 
-def element_value(node, text_limit=DEFAULT_TEXT_LIMIT, role=None):
+def element_value(node, text_limit=DEFAULT_TEXT_LIMIT, role=None, text_lengths=None,
+                  text_truncated=None):
     """Return the node's text or numeric value; see selected_option_name().
 
     ``role`` passes a role the caller already read, so it is not read from
     the provider a second time.
     """
-    direct = text_value(node, text_limit=text_limit) or numeric_value(node)
+    if role is None:
+        role = node_role(node)
+    if str(role).strip().lower().replace("_", " ") == "password text":
+        return ""
+    direct_lengths = {}
+    direct_truncated = []
+    direct = text_value(
+        node, text_limit=text_limit, text_lengths=direct_lengths,
+        text_truncated=direct_truncated,
+    )
     if direct:
+        if text_lengths is not None:
+            text_lengths.update(direct_lengths)
+        if text_truncated is not None:
+            text_truncated.extend(direct_truncated)
         return direct
+    numeric = numeric_value(node)
+    if numeric:
+        return numeric
     embedded = embedded_editor_text(node, text_limit=text_limit)
     if embedded:
         return embedded
     # Only dropdown roles pay for the descendant scan.
-    if role is None:
-        role = node_role(node)
     role = str(role or "")
     if role in ("combo box", "list box"):
-        return limit_text(selected_option_name(node), text_limit=text_limit)
+        selected = limit_text(selected_option_name(node), text_limit=text_limit)
+        if selected:
+            return selected
+    if text_lengths is not None:
+        text_lengths.update(direct_lengths)
+    if text_truncated is not None:
+        text_truncated.extend(direct_truncated)
     return direct
 
 

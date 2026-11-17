@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 
 	"github.com/microsoft/Hybrid-Computer-Use/computer-use/internal/contract"
@@ -16,6 +17,16 @@ func RunCLI(args []string, stdout io.Writer) error {
 	if len(args) == 0 {
 		fmt.Fprint(stdout, helpText(""))
 		return nil
+	}
+
+	switch args[0] {
+	case "-h", "--help", "help", "-v", "--version", "version":
+	default:
+		// Fail before serving anything: a misspelled ablation must not run
+		// the complete HCU under an ablation label.
+		if err := contract.ValidateAblations(runtime.GOOS, os.Getenv); err != nil {
+			return err
+		}
 	}
 
 	switch args[0] {

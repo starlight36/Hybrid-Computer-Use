@@ -8,6 +8,28 @@ import (
 	"testing"
 )
 
+func TestProviderGlobalInputPolicyRejectsNonLinuxBeforeDispatch(t *testing.T) {
+	for _, platform := range []string{"darwin", "windows", "unknown"} {
+		for _, policy := range []bool{false, true} {
+			for _, intent := range []AccessibilityOperation{AccessibilityClick, AccessibilityScroll} {
+				backend := &recordingPlatformBackend{}
+				service := NewServiceWithBackend(&globalInputPolicyBackend{backend, platform})
+				request := ProviderActionRequest{Intent: intent}
+				if intent == AccessibilityClick {
+					request.Click = &ProviderClickInput{AllowGlobalInput: &policy}
+				} else {
+					request.Scroll = &ProviderScrollInput{AllowGlobalInput: &policy}
+				}
+				result, err := service.callProviderAction(request)
+				if err != nil || result.OK || result.Failure == nil || result.Failure.Code != "invalid_argument" ||
+					result.Failure.Phase != "precondition" || result.Mutation.InputEventsEmitted || len(backend.actionRequests) != 0 {
+					t.Fatalf("%s dispatched unsupported %s policy: %#v, %v", platform, intent, result, err)
+				}
+			}
+		}
+	}
+}
+
 func TestRuntimeCallsRouteByPlatformDomain(t *testing.T) {
 	backend := &recordingPlatformBackend{
 		accessibilityResponse: &ProviderAccessibilityResult{OK: true},

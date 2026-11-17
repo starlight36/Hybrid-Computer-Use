@@ -59,14 +59,14 @@ XMODIFIERS
 ```
 
 The provider needs Python 3 with PyGObject and the AT-SPI, GTK and GdkPixbuf
-typelibs, plus `xdotool`, `wmctrl` and `x11-utils`. The IBus typelib and
+typelibs, plus `xdotool`, `wmctrl`, `x11-utils` and `libxres1`. The IBus typelib and
 packages are optional; they enable input-method keyboard typing. On Debian or
 Ubuntu:
 
 ```bash
 sudo apt-get install python3 python3-gi gir1.2-atspi-2.0 gir1.2-gtk-3.0 \
   gir1.2-gdkpixbuf-2.0 gir1.2-ibus-1.0 ibus ibus-gtk ibus-gtk3 \
-  xdotool wmctrl x11-utils
+  xdotool wmctrl x11-utils libxres1
 ```
 
 When `DISPLAY`, `XDG_RUNTIME_DIR` or `DBUS_SESSION_BUS_ADDRESS` is missing,
@@ -84,6 +84,22 @@ it is available. Keyboard text is typed in one of two ways:
 ASCII text without line feeds or tabs is typed as key events on both
 desktops. When AX falls back to keyboard typing, its note says which way the
 text was typed. GUI results do not include notes.
+
+Linux AX reads the focused text field after keyboard typing when its text is
+accessible. It waits up to one second for the expected insertion. Unchanged,
+unexpected or unreadable text produces an `effect_unknown` result without
+retyping. If window activation changes the resolved field, AX stops before
+sending keys. Without a readable field, the typing effect remains unknown.
+
+After keyboard fallback, Linux AX `set_value` reads the requested control for
+up to one second. Only an exact value match confirms the write. Text in a
+separate editor and changes to focus or selection do not confirm the control
+value. If readback fails, AX returns `effect_unknown`, retains input evidence,
+and stops later batch steps. Do not retype that value. Inspect the control,
+complete any pending edit through its normal commit action, then read it back.
+AX does not automatically press Enter because Enter can submit a form or insert
+a newline in other controls. Control readback does not prove that the document
+was saved or that a dialog applied its changes.
 
 To use the input method, applications must inherit the desktop's
 input-method environment. Existing application processes may need a restart
@@ -108,6 +124,27 @@ reads the binding before the next character reuses it. A call accepts at most
 500 non-ASCII characters. An Enter or Tab key keeps its normal effect in the
 focused control, for example submitting a form or moving focus. Text that
 contains NUL or an unpaired surrogate fails before any input on this path.
+
+### Keyboard navigation and application state
+
+The Linux key-event path sends keys in order. It does not wait for the
+application to finish each key's deferred commands before sending the next key.
+Input emission therefore does not prove that navigation finished before the
+following text started an edit.
+
+LibreOffice Calc can receive every Tab in a burst yet put the following text
+in an earlier cell. For example, typing `cancelled\t\t\t\tnote` from B2 can
+put `note` in C2 even though the selection later reaches F2. The same behavior
+occurs with direct XTEST input, without HCU or AT-SPI. Calc handles the first
+Tab synchronously while editing, but queues later navigation commands through
+its accelerator dispatcher. Following text can start an edit before those
+commands run. The final selection alone does not prove which cell received
+the text.
+
+For edits that depend on navigation, send individual `keypress` calls and
+inspect the resulting application state before typing into the destination.
+After committing the edit, read the destination cell's value as well as the
+selection. Tab navigation does not clear the cells it passes through.
 
 ### Accessibility on Linux
 
@@ -451,8 +488,10 @@ application aN -> top-level window wN -> element rN
   read failure. Missing windows remain unknown. Returned refs remain usable;
   title-based selection, implicit focus, and window waits require a complete
   listing. A missing window cannot prove that a close succeeded.
-- `observe` returns a window tree or a diff with `rN` refs; `find` returns
-  matching `rN`, and a truncated result prints the call for the next page.
+- `observe` returns a window tree or a diff with `rN` refs. On Linux,
+  `observe` with `read_text` returns one text page instead of a tree.
+  `find` returns matching `rN`, and a truncated result prints the call for
+  the next page.
 - References describe current state; they are not durable selectors. Every
   mutation resolves its reference against the live accessibility tree again
   and rejects stale or cross-window targets before any input.
@@ -489,24 +528,98 @@ Clipped excerpts also carry `text_truncated=true`. Text already displayed in a n
 or matched-text field is not repeated. Excerpts are display-only and do not
 change canonical text, selectors, refs, or the response budget.
 
+### Linux text pages
+
+On Linux, `AX` can read a field of an existing element ref without expanding
+the tree. Use `mode:"observe"`, an `rN` in `root`, and `read_text`:
+
+```json
+{"mode":"observe","root":"r12","read_text":{"field":"value","start":0,"limit":4000}}
+```
+
+The Python SDK accepts the same object through
+`desktop.observe(root="r12", read_text={"field": "value"})`.
+
+`root` must identify a node from an earlier result. The server resolves its
+live identity and rejects stale refs. Omit `app`; the ref identifies its owning
+application and window. `window_ref` is optional and must match the ref's owner
+if supplied. Do not combine `read_text` with `scope` or the `observe`
+field, even with `observe:"full"`. The `mode` remains `"observe"`.
+
+| Field | Source |
+| --- | --- |
+| `value` | The node's AT-SPI Text interface. If Text is unavailable or unreadable, the call fails explicitly; it does not substitute another property. |
+| `name` | The complete accessible name, before tree clipping. |
+| `description` | The complete accessible description, before tree clipping. |
+
+Offsets and lengths count Unicode code points, not bytes or grapheme
+clusters. `start` is a nonnegative integer and defaults to `0`. `limit` is
+an integer from `1` to `4000` and defaults to `4000`. Each page includes
+`start` and excludes `end`. The server returns at most `limit` code points,
+stopping at `total` when fewer remain. `start == total` returns a valid empty
+page. `start > total`, negative offsets, and invalid limits fail explicitly.
+
+After the standard AX evidence, the text page starts with one JSON metadata
+line, followed by a newline and the raw page text. Metadata contains `ref`, `window_ref`,
+`field`, `start`, `end`, `total`, and `truncated`. When `end < total`,
+`truncated` is `true` and `next_read` contains the next AX call. Otherwise,
+`truncated` is `false` and there is no next page. Follow `next_read` rather
+than calculating the next offset from the requested limit.
+
+For example, reading `A🙂BCDE` with `start:0` and `limit:4` returns:
+
+```text
+{"ref":"r12","window_ref":"w3","field":"value","start":0,"end":4,"total":6,"truncated":true,"next_read":{"mode":"observe","window_ref":"w3","root":"r12","read_text":{"field":"value","start":4,"limit":4}}}
+A🙂BC
+```
+
+With `COMPUTER_USE_STRUCTURED_CONTENT=1`, `structuredContent.text_page.text`
+also contains the raw page text. Text pages preserve whitespace and line
+breaks; they do not use the tree's preview clipping rules.
+
+The inline response budget can reduce the page below the requested `limit`.
+Metadata and the raw text must fit together. If the budget cannot hold a
+page and its continuation, the call fails explicitly. Paging does not raise
+the global tree size cap.
+
+Each page reads the live application, not a frozen document. If the provider
+detects a character-count change during one page read, that call fails.
+Changes between pages and same-length edits can escape detection. Combining
+pages does not guarantee a consistent snapshot.
+
+In Linux trees, a clipped field reports `… field length=N codepoints` and
+a `read_text` call, with the field name and full length. Non-interactive
+content with AT-SPI Text gets a value preview of at most 80 code points,
+plus an ellipsis when clipped, and an `rN` when its visible node has a complete
+provider identity. Go's 40-code-point cell values, 80-code-point
+find excerpts, and existing name and description display rules still apply.
+
+Text pages, truncation hints, and the revised interaction guide change the
+model-visible contract. They require a new evaluation attempt. Do not mix
+instruction revisions within an attempt or infer performance from these
+interface changes.
+
 ### `act` steps
 
 - `act` accepts up to 64 ordered steps: actions
-  `{type, ref|title, text|keys|value|direction|pages|to_ref}` and `wait`
-  steps. Argument errors reject the whole batch before input. The first step
+  `{type, ref|title, text|keys|value|direction|pages|to_ref, allow_global_input}` and `wait`
+  steps. Structural argument errors reject the whole batch before input. The first step
   that fails stops the batch, and the result says how many ran.
 - The `rN` or `wN` refs name the window, so an `act` call with refs needs no
-  `window_ref`. `window_ref` only sends ref-less `keypress` and `type` to a
-  window other than the focused one. `keypress` and `type` without `ref` go
-  to the window that had focus when the call started.
+  `window_ref`. For ref-less steps, `window_ref` selects the initial batch
+  target; otherwise it defaults to the window focused when the call started.
 - `activate` and `close` accept a window title substring, resolved to one
-  `wN` before any input.
+  `wN` before any input. `activate` with a `wN` or title switches the batch
+  target. Later refs and ref-less steps use that window. AX rejects refs
+  from another window without an explicit `activate` first. To reuse refs
+  from the previous window, activate that window again; refs must still be
+  valid. Each step reports its window.
 - The decoder accepts `type.value` as `type.text` and non-empty
   `set_value.text` as `set_value.value`. Supplying both fields is rejected
   before input. The published schema advertises only the canonical names.
 - `observe` selects the evidence returned after the batch. The default is a
-  compact `diff`. An explicit `tree` returns the complete final window tree,
-  and `full` also returns a screenshot. These requests have the same
+  compact `diff` of the last executed window. An explicit `tree` returns
+  that window's complete tree, and `full` also returns a screenshot. These requests have the same
   meaning after a mutation, an ordered input sequence, or a final wait;
   evidence is captured after the wait finishes.
 - The removed `until` field, and its older spellings `postcondition` and
@@ -572,6 +685,90 @@ statement inside that follow-up describes the read, not the earlier action.
 Stale-window follow-ups report the unavailable source reference without
 repeating an input-delivery statement.
 
+### Linux click and scroll input policy
+
+Linux AX `click` and `scroll` accept an optional per-action boolean
+`allow_global_input`. It defaults to `true`. Set it to `false` to forbid
+driver-requested focus changes, window activation or raising, and synthesized
+pointer or keyboard input for that action. This includes focus preparation
+for editors and pointer input used only to synchronize Qt control state.
+The policy does not promise that application focus stays unchanged. An
+accessibility action can itself open or raise a dialog or change app focus.
+
+```json
+{"mode":"act","actions":[{"type":"click","ref":"r12","allow_global_input":false},{"type":"scroll","ref":"r15","direction":"down","pages":1,"allow_global_input":false}]}
+```
+
+The field is supported only on Linux and only inside `click` or `scroll`
+actions. A non-boolean value, another action type, a top-level field, or use
+on another platform returns `invalid_argument`. These errors reject the
+whole batch before any action runs, even when the supplied value is `true`.
+Omitting the field preserves the existing behavior on every platform.
+The policy applies to each action separately; it does not restrict other
+actions in the same batch.
+
+Tab clicks prefer the parent container's accessibility selection operation,
+even when the tab exposes its own action. List items, table rows and table
+cells use parent selection only when they have no own action.
+
+Semantic scroll uses a direct scrollbar or the unique directional scrollbar
+of the nearest scroll pane or viewport. It does not select an unrelated
+sibling panel's scrollbar. Each requested page represents five minimum
+range increments, clamped to the range bounds.
+Fractional pages retain their fractional range increment.
+`pages` is approximate for both range changes and wheel input. Range units
+are not assumed to be pixels. The provider reads back the exact clamped
+target; an unchanged value at a boundary is a verified no-op.
+
+If a semantic route is unavailable, global input is allowed only when
+`allow_global_input` is `true`. Otherwise the action returns
+`global_input_forbidden`, with provider phase `precondition` and
+`input_events_emitted=false`.
+
+An attempted selection or range mutation whose verification fails returns
+`effect_unknown` with `input_emitted=true`, without a global retry.
+With global input forbidden, an AT-SPI action that was called but returned
+false also reports `effect_unknown` with `input_emitted=true`, without a
+global retry. An AT-SPI action returning true keeps the existing post-action
+evidence behavior; the return value does not prove the requested effect.
+When global input is allowed, unsuccessful generic actions keep their
+existing fallback behavior.
+This input flag includes attempted semantic mutations, not just global events.
+Check `completed` and `input_emitted`: earlier batch steps may already have run.
+
+Results retain `[a11y][synthesis]` route notes and their warnings. A route
+note describes input delivery, not proof that the application accepted it.
+
+### Linux key names
+
+AX and GUI `keypress` accept one chord, such as `["CTRL","S"]`.
+Named keys are case-insensitive. `KP_ADD`, `kp_add` and `KP_Add` name the
+same keypad key. The desktop keyboard layout must map the requested key.
+
+| Keys | Accepted names |
+| --- | --- |
+| Modifiers | `CTRL` / `CONTROL`, `SHIFT`, `ALT`, `SUPER` / `WIN` / `CMD` |
+| Editing | `ENTER` / `RETURN`, `TAB`, `ESC` / `ESCAPE`, `BACKSPACE`, `DELETE`, `INSERT`, `SPACE` |
+| Navigation | `LEFT`, `RIGHT`, `UP`, `DOWN` (also `ARROWLEFT`, `ARROWRIGHT`, `ARROWUP`, `ARROWDOWN`), `HOME`, `END` |
+| Pages | `PAGEUP` / `PAGE_UP` / `PRIOR`, `PAGEDOWN` / `PAGE_DOWN` / `NEXT` |
+| Function and lock keys | `F1` through `F12`, `CAPS_LOCK`, `NUM_LOCK`, `SCROLL_LOCK`, `PRINT`, `PAUSE`, `MENU` |
+| Keypad numbers | `KP_0` through `KP_9` |
+| Keypad operations | `KP_ADD`, `KP_SUBTRACT`, `KP_MULTIPLY`, `KP_DIVIDE`, `KP_DECIMAL`, `KP_EQUAL`, `KP_ENTER` |
+| Keypad navigation | `KP_HOME`, `KP_END`, `KP_LEFT`, `KP_RIGHT`, `KP_UP`, `KP_DOWN`, `KP_BEGIN`, `KP_INSERT`, `KP_DELETE`, `KP_PRIOR` / `KP_PAGE_UP`, `KP_NEXT` / `KP_PAGE_DOWN` |
+| Characters | Letters, digits and punctuation; use `PLUS` for `+`, which separates chord tokens |
+
+Other X11 key names are accepted when the desktop layout maps them.
+Named punctuation includes `COMMA`, `PERIOD`, `MINUS`, `SLASH` and `EQUAL`.
+Keypad symbols select their numeric or navigation layer regardless of
+NumLock. Explicit modifiers still apply. Letter chords use hardware keycodes,
+so `["CTRL","S"]` does not add Shift.
+
+Unknown names return `invalid_argument` with accepted spelling examples before
+that step takes focus or sends input. A known name without a hardware mapping
+fails explicitly. GUI validates all key steps before the batch starts; AX
+resolves Linux key names before each key step. Check `completed` before retrying
+an AX batch that already ran earlier steps.
+
 ### `select` steps
 
 A `select` step selects without typing or clicking:
@@ -583,9 +780,17 @@ A `select` step selects without typing or clicking:
   paragraphs.
 - On a combo box or list box, `"text"` chooses the option with that name. On
   an option of an open combo box popup, `{"ref":"rA"}` chooses that option.
-  A combo box that names itself after its choice, as in GTK and Qt, must
-  show the option afterwards; a Qt popup is committed by moving its current
+  GTK reads back the active item through the combo box's Selection interface.
+  Qt reads back the shown choice; a Qt popup commits by moving its current
   item to the option and pressing Return.
+
+On Linux, `set_value` on a native GTK combo box also chooses an option by
+name. Both actions use the combo box's Selection interface without opening
+the popup or taking keyboard focus. Failed selection or unreadable active
+state returns `effect_unknown` without a popup or keyboard retry. Combo
+boxes with an entry use the same selection path; use the entry's own ref
+for free-form text. LibreOffice's projected combo controls retain their
+separate editor and popup paths.
 
 The provider reads the selection back and reports it as a note, for example
 `[select] selected 4 cells A2:B3`. It fails with `effect_unknown` when it
@@ -606,7 +811,14 @@ effect: r58 checkbox "Interface" checked=false→true
 windows: opened w5 "Insert Sheet" (dialog, focused); closed w3 "Print"; focus w2
 ```
 
-There is one `effect` line per action with an element `ref`. It compares the
+Each `type` step reports its text-value evidence. Without a ref, the report
+uses the unique focused editable textbox in the pre-action read. A focus
+change alone does not confirm typing. Unchanged values are reported as such;
+missing, incomplete or unreadable evidence produces `unknown` with a reason.
+Empty values remain unknown because the snapshot does not distinguish empty
+text from unavailable text. These lines add no provider calls.
+
+Other actions with an element `ref` also have one `effect` line. It compares the
 element in the read before that action with the next read after it and names
 the role, the name, and the state or value fields that changed. When both
 reads are of the same window and nothing else in it changed, the line ends
@@ -643,7 +855,8 @@ receive synthesized keyboard input through the toggle.
 
 ### Errors
 
-Every AX and GUI result starts with one JSON line: `ok`, and on failure
+Except for successful [text pages](#linux-text-pages), AX and GUI results
+start with one JSON line: `ok`, and on failure
 `code`, `path`, `message` and `hint` (a corrected call), then
 `input_emitted`, `completed` and `requested`. The public codes are:
 
@@ -655,6 +868,7 @@ Every AX and GUI result starts with one JSON line: `ok`, and on failure
 | `wait_timeout` | AX | maybe | Observe again; `completed` counts the steps that ran. |
 | `window_changed` | AX, GUI | maybe | Observe before retrying; do not repeat the batch blindly. |
 | `effect_unknown` | AX, GUI | maybe | Observe before retrying; input may have taken effect. |
+| `global_input_forbidden` | AX | only earlier batch steps | The refused action sent no input. Check `completed` and observe before replanning; permit global input only when authorized. |
 | `app_unavailable` | AX | no | List apps; the application is not running or not accessible. |
 | `ambiguous_window` | AX | no | Use a longer title or the `wN` from `apps`. |
 | `window_not_found` | AX | no | List apps and use a `wN` or an exact title. |
@@ -664,6 +878,20 @@ Every AX and GUI result starts with one JSON line: `ok`, and on failure
 
 `PublicErrorCodes` in `internal/contract/contract_describe.go` is the source
 of this table; the CLI exit statuses come from it too.
+
+An AX batch failure keeps the failed action's reason in `message` and its
+provider code in `failure_code`. The batch summary and per-action facts remain
+in the result. With no input or mutation uncertainty, provider precondition
+failures `invalid_argument` and `unsupported_action` use public code
+`invalid_argument`; `path` names the failed action. The recovery hint observes
+the target window to inspect its current values, or requests a GUI screenshot
+when the semantic operation is unsupported. An `input_failed` failure keeps
+public code `runtime_error` and requests observation of the target window.
+If these failures follow input or uncertain dispatch, the public code is
+`effect_unknown`; the hint does not replay the batch.
+An observation root whose provider identity disappeared, became ambiguous, or
+moved to another window reports `stale_ref`. Its hint observes the application
+without that root.
 
 Recovery follows the concrete failure, `input_emitted`, `completed`, and
 `retry_same_request`. A coordinate ownership failure requests a new GUI
@@ -677,6 +905,12 @@ permission-recovery instructions instead of another call. Restore the current
 provider's permissions and restart it before observing again. When capture
 fails after input, the result retains its partial or uncertain input evidence;
 restoring permission does not authorize replaying the actions.
+
+Invalid call shapes remain errors. `mode:"activate"` with actions shows the
+same call with `mode:"act"`. An action with `type:"settle"` shows a `wait`
+with `settle:true`, which must follow input in that call. AX has no
+`double_click` action: its `click` invokes an element once. The error explains
+the GUI double-click shape, with coordinates from a fresh desktop screenshot.
 
 ### GUI
 
@@ -759,7 +993,7 @@ the shell or the application.
 | `COMPUTER_USE_ERROR_CONTEXT` | `off` stops capturing fresh UI state after a failed call |
 | `COMPUTER_USE_OUTPUT_MODE` | `file` writes large outputs to files and returns their paths |
 | `COMPUTER_USE_OUTPUT_DIR`, `COMPUTER_USE_OUTPUT_THRESHOLD` | directory (default `computer-use` in the system temporary directory) and minimum size (4000 characters) for file output |
-| `COMPUTER_USE_MAX_INLINE_CHARS` | inline text budget per result, 24000 characters by default |
+| `COMPUTER_USE_MAX_INLINE_CHARS` | inline text budget per result, 24000 characters by default; smaller budgets reduce `read_text` page size without raising tree caps |
 | `COMPUTER_USE_TRACE_FILE` | append one JSONL line per AX action |
 | `COMPUTER_USE_PYTHON_BINARY` | Linux: interpreter for the provider, `python3` by default |
 | `COMPUTER_USE_RUNTIME_TIMEOUT_SECONDS` | base provider request timeout, 30 seconds by default |
@@ -775,12 +1009,36 @@ loss. Tracing does not extend the timeout or change retry rules.
 
 ## Troubleshooting
 
+When a window snapshot returns only its top-level root, AX reports
+`AX content unavailable in this snapshot`. The window was observed, but AX
+did not obtain its content. This does not identify a renderer crash, navigation,
+or a visually empty page. When the read has coverage gaps, the diagnostic states
+that omitted content may still exist. Existing coverage notes remain available.
+Rooted, content-scoped, find, and intermediate lightweight reads do not trigger
+this window-level diagnostic.
+
+Inspect a GUI screenshot and verify the outcome of any prior delete or submit
+before repeating it. If the application supports reloading and it is safe,
+reload and observe again. HCU does not reload or replay an action automatically.
+For a persistent blank Electron window, application operators can collect
+`render-process-gone`, `did-fail-load`, and navigation events to distinguish
+renderer exit from loading failures. Check container shared-memory capacity
+and application logs; window survival alone does not prove content recovery.
+
 AX lists managed Linux application windows even when their process registers
 on the accessibility bus without exporting a tree for every window. Such
 windows have a `wN` marked `(no accessibility tree: use GUI)`. AX can activate,
 close, or wait for them; GUI reads and operates their content. If an AX root
 cannot be matched safely to a native window, the inventory reports incomplete
 coverage instead of issuing another reference for that window.
+
+Some X11 applications, including Tk applications, omit `_NET_WM_PID`.
+HCU uses the X-Resource extension to identify their local client process.
+This requires `libxres1` and X-Resource 1.2 or later on the X server.
+If the process identity cannot be verified, the inventory names the window
+as an incomplete observation and does not issue an actionable reference.
+Activation sends a window-manager request without moving the pointer.
+The result confirms the active window, not the focus of an inaccessible control.
 
 AX sees no applications, or `AX apps` reports windows that are not on the
 accessibility bus: restart those applications after the server has run

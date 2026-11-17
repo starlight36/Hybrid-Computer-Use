@@ -65,6 +65,22 @@ func TestUnchangedNotesReportOnlyObservedChange(t *testing.T) {
 	}
 }
 
+func TestAXSynthesisNotesSurviveNormalization(t *testing.T) {
+	note := "[a11y][synthesis] Synthesized wheel input. Global input may change focus; verify the effect."
+	for _, notes := range [][]string{
+		modelFacingAXNotes([]string{note, note}),
+		modelFacingAXNotes(observeNoneNotes([]string{note})),
+	} {
+		if len(notes) != 1 || notes[0] != note {
+			t.Fatalf("synthesis warning lost or rewritten: %#v", notes)
+		}
+	}
+	result := compactAXActionContent(TextResult("Note: "+note, false))
+	if ResultText(result) != "Note: "+note {
+		t.Fatalf("batch compaction lost the warning: %s", ResultText(result))
+	}
+}
+
 func TestFindOmitsInternalContinuityDiagnostics(t *testing.T) {
 	notes := compactFindNotes([]string{
 		"SNAPSHOT UNCHANGED: a long explanation that should not be repeated.",

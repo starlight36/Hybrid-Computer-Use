@@ -22,6 +22,10 @@ type axNoTreeWindowError struct {
 }
 
 func (err *axNoTreeWindowError) Error() string {
+	if contract.Ablated(contract.AblateWait) {
+		return err.ref + " has no accessibility tree. " +
+			"Read and operate it with GUI; AX can only activate or close this window."
+	}
 	return err.ref + " has no accessibility tree. " +
 		"Read and operate it with GUI; AX can only activate, " +
 		"close or wait for this window."
@@ -49,91 +53,73 @@ func (s *Service) noTreeWindowEntry(ref string) *AXWindowRefEntry {
 	return entry
 }
 
-// axNoTreeBatchWindow returns the window without a tree that a batch names
-// through window_ref or an activate or close target, or nil.
-func (s *Service) axNoTreeBatchWindow(actions []axBatchAction, windowRef string) *AXWindowRefEntry {
-	if entry := s.noTreeWindowEntry(windowRef); entry != nil {
-		return entry
+func (s *Service) validateAXNoTreeSegment(context *AXBatchContext, actions []axBatchAction, start int) error {
+	if context == nil || s.noTreeWindowEntry(context.WindowRef) == nil {
+		return nil
 	}
-	for _, action := range actions {
-		if entry := s.noTreeWindowEntry(action.targetRef); entry != nil {
-			return entry
-		}
-	}
-	return nil
-}
-
-// axNoTreeWindowBatch runs a batch on a window without an accessibility
-// tree. Only activate, close and window waits can work there; anything
-// else is rejected before the first action, so no input is sent.
-func (s *Service) axNoTreeWindowBatch(
-	actions []axBatchAction,
-	window *AXWindowRefEntry,
-	notes []string,
-	requested int,
-) ToolCallResult {
 	for index, action := range actions {
 		switch action.actionType {
 		case "activate", "close":
-			if action.targetRef == "" || s.noTreeWindowEntry(action.targetRef) != nil {
-				continue
-			}
-			return axArgErrorResult(axInvalid(fmt.Sprintf("actions[%d]", index),
-				"one call cannot act on a window without an accessibility tree "+
-					"and on other windows; split it into separate calls",
-				`{"mode":"act","actions":[{"type":"activate","ref":"`+window.Ref+`"}]}`), requested)
+			continue
 		case "wait":
 			if action.wait != nil && action.wait.window != "" {
 				continue
 			}
 		}
-		return axNoTreeWindowResult(&axNoTreeWindowError{ref: window.Ref},
-			fmt.Sprintf("actions[%d]", index), requested)
+		return &axArgError{
+			Code:    contract.AXCodeAppUnavailable,
+			path:    fmt.Sprintf("actions[%d]", start+index),
+			Message: (&axNoTreeWindowError{ref: context.WindowRef}).Error(),
+			Hint:    GUIScreenshotCall,
+		}
 	}
-	lines := append([]string{}, notes...)
-	emitted := false
-	closed := map[string]bool{}
-	for index, action := range actions {
-		if action.actionType == "wait" {
-			result := s.runAXWait(&AXBatchContext{WindowRef: window.Ref}, action.wait)
-			if !axPostconditionPassed(result) {
-				return axNoTreeBatchStop(result, index, requested, emitted, lines)
-			}
-			lines = append(lines, firstLine(ResultText(result)))
-			continue
-		}
-		target := window
-		if action.targetRef != "" {
-			target = s.noTreeWindowEntry(action.targetRef)
-		}
-		result := s.axNoTreeWindowCommand(action.actionType, target)
-		if result.IsError {
-			return axNoTreeBatchStop(result, index, requested, emitted, lines)
-		}
-		emitted = true
-		verb := "activated"
-		if action.actionType == "close" {
-			verb = "closed"
-			closed[target.Ref] = true
-		}
-		lines = append(lines, verb+" "+target.Ref)
+	return nil
+}
+
+func (s *Service) axNoTreeBatchAction(action string, window *AXWindowRefEntry) ToolCallResult {
+	result := s.axNoTreeWindowCommand(action, window)
+	if result.IsError {
+		return result
 	}
-	if !closed[window.Ref] {
-		lines = append(lines, window.Ref+" "+axNoTreeWindowMark)
+	result = axNoTreeBatchObservation(window)
+	verb := "activated"
+	if action == "close" {
+		verb = "closed"
 	}
-	result := TextResult(strings.Join(lines, "\n"), false)
+	result.Content = append([]ContentItem{{Type: "text", Text: verb + " " + window.Ref}}, result.Content...)
+	result.StructuredContent["input_events_emitted"] = true
+	return result
+}
+
+func axNoTreeBatchObservation(window *AXWindowRefEntry) ToolCallResult {
+	result := TextResult(window.Ref+" "+axNoTreeWindowMark, false)
 	result.StructuredContent = map[string]any{
-		"input_events_emitted":       emitted,
+		"input_events_emitted":       false,
 		"final_observation_returned": false,
 		"final_observation_kind":     "none",
 		"observation_required":       false,
 		"evidence_scope":             "delivery_or_local_ui",
-		"a11y_batch_result": map[string]any{
-			"actions_requested":                    requested,
-			"actions_completed_without_call_error": len(actions),
-		},
 	}
 	return result
+}
+
+func (s *Service) axNoTreeBatchWindowContinuity(context *AXBatchContext) (axWindowContinuity, bool) {
+	if s == nil || context == nil || s.noTreeWindowEntry(context.WindowRef) == nil {
+		return axWindowUnknown, false
+	}
+	if !validInternalWindowHandle(context.WindowHandle) {
+		return axWindowUnknown, true
+	}
+	inventory, _ := s.listDesktopWindows(false)
+	if inventory == nil {
+		return axWindowUnknown, true
+	}
+	for _, window := range inventory.windows {
+		if window.handle == context.WindowHandle {
+			return axWindowSame, true
+		}
+	}
+	return axWindowChanged, true
 }
 
 // axNoTreeWindowCommand asks the provider to activate or close the native
@@ -178,32 +164,6 @@ func (s *Service) axNoTreeWindowCommand(action string, window *AXWindowRefEntry)
 		emitted := response.Mutation != nil && response.Mutation.InputEventsEmitted
 		result.StructuredContent["input_events_emitted"] = emitted
 		result.StructuredContent["mutation_unknown"] = emitted
-	}
-	return result
-}
-
-func axNoTreeBatchStop(
-	result ToolCallResult,
-	index, requested int,
-	emitted bool,
-	lines []string,
-) ToolCallResult {
-	if result.StructuredContent == nil {
-		result.StructuredContent = map[string]any{}
-	}
-	if emitted {
-		result.StructuredContent["input_events_emitted"] = true
-	}
-	result.StructuredContent["a11y_batch_result"] = map[string]any{
-		"actions_requested":                    requested,
-		"actions_completed_without_call_error": index,
-		"failed_action_index":                  index,
-	}
-	if len(lines) > 0 {
-		result.Content = append(
-			[]ContentItem{{Type: "text", Text: strings.Join(lines, "\n")}},
-			result.Content...,
-		)
 	}
 	return result
 }

@@ -549,6 +549,174 @@ class KeyResolutionTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             runtime.keycode("NoSuchKeyName")
 
+    def test_keypad_and_mixed_case_names_resolve_in_any_case(self):
+        names = [name[4:] for name in dir(runtime.Gdk)
+                 if name.startswith("KEY_KP_")]
+        names.extend(["ISO_Left_Tab", "AudioMute", "Print", "Scroll_Lock"])
+        for name in names:
+            expected = runtime.Gdk.keyval_from_name(name)
+            self.assertNotIn(expected, (0, runtime.GDK_VOID_SYMBOL))
+            for spelling in (name, name.upper(), name.lower()):
+                with self.subTest(spelling=spelling):
+                    self.assertEqual(runtime.keysym(spelling), expected)
+
+    def test_invalid_key_is_classified_before_focus_or_input(self):
+        for key in ("KP_AD", "ctrl+shft+s", "+", "ctrl++s"):
+            with self.subTest(key=key), \
+                    mock.patch.object(runtime, "require_window_focus") as focus, \
+                    mock.patch.object(runtime, "focus_target_element") as target, \
+                    mock.patch.object(runtime, "emit_keyboard_event") as emit, \
+                    mock.patch.object(runtime.Gdk.Keymap, "get_default") as keymap:
+                keymap.return_value.get_entries_for_keyval.return_value = (
+                    True, [mock.Mock(keycode=37)])
+                runtime.action_evidence.reset()
+                try:
+                    runtime._perform_keypress({"key": key}, None, None, None, [], {})
+                except runtime.OperationFailure as error:
+                    response = runtime.operation_failure_response(error)
+                else:
+                    self.fail("invalid key did not raise OperationFailure")
+                self.assertEqual(response["failureCode"], "invalid_argument")
+                self.assertEqual(response["failurePhase"], "precondition")
+                self.assertFalse(response["input_events_emitted"])
+                self.assertIn("Use", response["error"])
+                focus.assert_not_called()
+                target.assert_not_called()
+                emit.assert_not_called()
+
+    def test_named_keys_use_symbols_and_modifiers_use_hardware_codes(self):
+        for key, expected in (("KP_ADD", "KP_Add"), ("KP_1", "KP_1"),
+                              ("KP_DECIMAL", "KP_Decimal"), ("EXCLAM", "exclam"),
+                              ("TAB", "Tab")):
+            with self.subTest(key=key), \
+                    mock.patch.object(runtime, "keycode", return_value=50), \
+                    mock.patch.object(runtime, "emit_keyboard_event", return_value=True) as emit:
+                runtime.send_key("SHIFT+" + key)
+                self.assertEqual(emit.call_args_list[0].args[:3],
+                                 (50, None, runtime.Atspi.KeySynthType.PRESS))
+                self.assertEqual(emit.call_args_list[1].args[:3],
+                                 (runtime.Gdk.keyval_from_name(expected), None,
+                                  runtime.Atspi.KeySynthType.SYM))
+                self.assertEqual(emit.call_args_list[2].args[:3],
+                                 (50, None, runtime.Atspi.KeySynthType.RELEASE))
+
+    def test_letter_chord_does_not_add_implicit_shift(self):
+        with mock.patch.object(runtime, "keycode", side_effect=[37, 39, 39]), \
+                mock.patch.object(runtime, "emit_keyboard_event", return_value=True) as emit:
+            runtime.send_key("CTRL+S")
+        self.assertEqual(emit.call_args_list[1].args[:3],
+                         (39, None, runtime.Atspi.KeySynthType.PRESSRELEASE))
+
+    def test_known_unmapped_key_is_an_explicit_precondition_failure(self):
+        with mock.patch.object(runtime.Gdk.Keymap, "get_default") as keymap:
+            keymap.return_value.get_entries_for_keyval.return_value = (False, [])
+            with self.assertRaises(runtime.OperationFailure) as caught:
+                runtime.parse_key("KP_ADD")
+        self.assertEqual(caught.exception.failure_code, "unsupported_action")
+        self.assertFalse(caught.exception.input_events_emitted)
+        self.assertIn("keyboard layout", str(caught.exception))
+
+    def test_gui_rejects_unknown_key_before_any_action(self):
+        with mock.patch.object(runtime, "execute_gui_action") as execute, \
+                mock.patch.object(runtime, "desktop_bounds") as bounds:
+            response = runtime.perform_gui([
+                {"type": "click", "x": 10, "y": 10},
+                {"type": "keypress", "keys": ["KP_AD"]},
+            ])
+        self.assertFalse(response["ok"])
+        self.assertTrue(response["preflight_only"])
+        self.assertFalse(response["input_events_emitted"])
+        self.assertEqual(response["dispatched"], 0)
+        self.assertEqual(response["validation_errors"][0]["index"], 1)
+        self.assertIn("KP_ADD", response["validation_errors"][0]["error"])
+        execute.assert_not_called()
+        bounds.assert_not_called()
+
+    def test_symbol_emission_failure_releases_explicit_modifiers(self):
+        events = []
+
+        def generate(keyval, keystring, synth_type):
+            events.append((keyval, synth_type))
+            return synth_type != runtime.Atspi.KeySynthType.SYM
+
+        with mock.patch.object(runtime, "keycode", return_value=50), \
+                mock.patch.object(runtime.Atspi, "generate_keyboard_event", side_effect=generate):
+            with self.assertRaises(runtime.InputEmissionError) as caught:
+                runtime.send_key("SHIFT+KP_ADD")
+        self.assertTrue(caught.exception.events_emitted)
+        self.assertEqual(events, [
+            (50, runtime.Atspi.KeySynthType.PRESS),
+            (runtime.Gdk.KEY_KP_Add, runtime.Atspi.KeySynthType.SYM),
+            (50, runtime.Atspi.KeySynthType.RELEASE),
+        ])
+
+    def test_modifier_and_lock_keys_use_hardware_events(self):
+        for name in ("CAPS_LOCK", "NUM_LOCK", "SCROLL_LOCK", "CONTROL_R", "SHIFT"):
+            with self.subTest(name=name), \
+                    mock.patch.object(runtime, "keycode", return_value=66), \
+                    mock.patch.object(runtime, "emit_keyboard_event", return_value=True) as emit:
+                runtime.send_key(name)
+            self.assertEqual(emit.call_args_list[0].args[:3],
+                             (66, None, runtime.Atspi.KeySynthType.PRESSRELEASE))
+            self.assertEqual(emit.call_count, 1)
+
+    def test_keypad_navigation_finds_numlock_mask_from_layout(self):
+        with mock.patch.object(runtime.Gdk.Keymap, "get_default") as keymap, \
+                mock.patch.object(runtime.Gdk, "get_default_root_window") as root:
+            keymap.return_value.get_entries_for_keyval.return_value = (
+                True, [mock.Mock(keycode=79, group=0)])
+            keymap.return_value.translate_keyboard_state.return_value = (
+                True, runtime.Gdk.KEY_KP_7, 0, 1, 32)
+            root.return_value.get_pointer.return_value.mask = 32
+            self.assertEqual(runtime.keypad_navigation_numlock_mask(runtime.Gdk.KEY_KP_Home), 32)
+            root.return_value.get_pointer.return_value.mask = 0
+            self.assertEqual(runtime.keypad_navigation_numlock_mask(runtime.Gdk.KEY_KP_Home), 0)
+            keymap.return_value.translate_keyboard_state.assert_called_once_with(
+                79, runtime.Gdk.ModifierType(32), 0)
+
+    def test_numlock_cleanup_preserves_failures_and_input_history(self):
+        for failed_type in (runtime.Atspi.KeySynthType.UNLOCKMODIFIERS,
+                            runtime.Atspi.KeySynthType.SYM,
+                            runtime.Atspi.KeySynthType.LOCKMODIFIERS):
+            events = []
+
+            def generate(keyval, keystring, synth_type):
+                events.append((keyval, synth_type))
+                return synth_type != failed_type
+
+            with self.subTest(failed_type=failed_type), \
+                    mock.patch.object(runtime, "keycode", return_value=79), \
+                    mock.patch.object(runtime, "keypad_navigation_numlock_mask", return_value=16), \
+                    mock.patch.object(runtime.Atspi, "generate_keyboard_event", side_effect=generate):
+                with self.assertRaises(runtime.InputEmissionError) as caught:
+                    runtime.send_key("KP_HOME")
+            self.assertTrue(caught.exception.events_emitted)
+            self.assertEqual(events[-1], (16, runtime.Atspi.KeySynthType.LOCKMODIFIERS))
+            self.assertEqual(events[0], (16, runtime.Atspi.KeySynthType.UNLOCKMODIFIERS))
+
+    def test_symbol_transport_exception_keeps_uncertainty_and_cleanup(self):
+        for key in ("KP_ADD", "SHIFT+KP_ADD"):
+            events = []
+
+            def generate(keyval, keystring, synth_type):
+                events.append((keyval, synth_type))
+                if synth_type == runtime.Atspi.KeySynthType.SYM:
+                    raise RuntimeError("keyboard connection lost")
+                return True
+
+            with self.subTest(key=key), \
+                    mock.patch.object(runtime, "keycode", return_value=50), \
+                    mock.patch.object(runtime.Atspi, "generate_keyboard_event", side_effect=generate):
+                runtime.action_evidence.reset()
+                with self.assertRaisesRegex(RuntimeError, "keyboard connection lost") as caught:
+                    runtime.send_key(key)
+                response = runtime.unexpected_operation_failure_response(caught.exception)
+                self.assertEqual(response["failureCode"], "effect_unknown")
+                self.assertTrue(response["partial_input_possible"])
+                self.assertEqual(response["input_events_emitted"], key.startswith("SHIFT"))
+                if key.startswith("SHIFT"):
+                    self.assertEqual(events[-1], (50, runtime.Atspi.KeySynthType.RELEASE))
+
 
 class FocusDiagnosticTests(AtspiPatchedTestCase):
     def test_names_the_window_that_actually_holds_focus(self):

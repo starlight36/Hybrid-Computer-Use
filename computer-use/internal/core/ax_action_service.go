@@ -368,6 +368,10 @@ func applyActionElementResolution(
 }
 
 func (s *Service) click(app, elementIndex, declared string, x, y *float64, clickCount int, mouseButton, clickMethod string, obs observation) ToolCallResult {
+	return s.clickWithGlobalInput(app, elementIndex, declared, x, y, clickCount, mouseButton, clickMethod, obs, nil)
+}
+
+func (s *Service) clickWithGlobalInput(app, elementIndex, declared string, x, y *float64, clickCount int, mouseButton, clickMethod string, obs observation, allowGlobalInput *bool) ToolCallResult {
 	if app == "" {
 		return TextResult("Missing required argument: app", true)
 	}
@@ -402,7 +406,8 @@ func (s *Service) click(app, elementIndex, declared string, x, y *float64, click
 	request := AXServiceRequest{
 		App: app,
 		Action: AXClickCommand{
-			X: x, Y: y, ClickCount: clickCount,
+			AllowGlobalInput: allowGlobalInput,
+			X:                x, Y: y, ClickCount: clickCount,
 			MouseButton: mouseButton, ClickMethod: clickMethod,
 		},
 
@@ -449,6 +454,16 @@ func (s *Service) scroll(
 	pages float64,
 	obs observation,
 ) ToolCallResult {
+	return s.scrollWithGlobalInput(app, direction, elementIndex, declared, targetWindowHandle, expectedWindow, pages, obs, nil)
+}
+
+func (s *Service) scrollWithGlobalInput(
+	app, direction, elementIndex, declared, targetWindowHandle string,
+	expectedWindow *ProviderWindowExpectation,
+	pages float64,
+	obs observation,
+	allowGlobalInput *bool,
+) ToolCallResult {
 	if app == "" {
 		return TextResult("Missing required argument: app", true)
 	}
@@ -470,7 +485,8 @@ func (s *Service) scroll(
 		return s.actionResult(app, AXServiceRequest{
 			App: app,
 			Action: axScrollCommand{
-				Direction: normalized, Pages: pages, WindowCentre: true,
+				AllowGlobalInput: allowGlobalInput,
+				Direction:        normalized, Pages: pages, WindowCentre: true,
 			},
 			TargetWindowHandle: targetWindowHandle,
 			ExpectedWindow:     expectedWindow,
@@ -485,7 +501,7 @@ func (s *Service) scroll(
 	}
 	request := AXServiceRequest{
 		App:                app,
-		Action:             axScrollCommand{Direction: normalized, Pages: pages},
+		Action:             axScrollCommand{Direction: normalized, Pages: pages, AllowGlobalInput: allowGlobalInput},
 		TargetWindowHandle: targetWindowHandle,
 		IncludeScreenshot:  obs.resolvedScreenshot(), Observe: obs.resolvedMode(),
 		CaptureSnapshot: obs.captureSnapshot, LightReadback: obs.lightReadback,

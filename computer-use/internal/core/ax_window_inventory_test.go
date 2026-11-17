@@ -1,6 +1,8 @@
 package core
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -300,6 +302,26 @@ func TestFocusChangeBeforeFirstActionStopsWithoutInput(t *testing.T) {
 }
 
 func TestFocusChangeAfterActionKStopsAtKPlusOne(t *testing.T) {
+	focusChangeBatch(t, false)
+}
+
+// With guard ablated the focus check only logs, and every key is sent.
+func TestGuardAblationLetsFocusBoundBatchContinue(t *testing.T) {
+	log := filepath.Join(t.TempDir(), "guard.jsonl")
+	t.Setenv(contract.AblationEnv, contract.AblateGuard)
+	t.Setenv(contract.GuardLogEnv, log)
+	focusChangeBatch(t, true)
+	data, err := os.ReadFile(log)
+	if err != nil || !strings.Contains(string(data), `"reason":"focus_left_bound_window"`) ||
+		!strings.Contains(string(data), `"next_action_index":2`) {
+		t.Fatalf("guard log %q err=%v", data, err)
+	}
+}
+
+// focusChangeBatch sends three keys to the focused window; focus moves to
+// another window before the third.
+func focusChangeBatch(t *testing.T, guardAblated bool) {
+	t.Helper()
 	focused := editorApps(
 		testWindow{testHandleReport, "Report - Editor", true},
 	)
@@ -334,6 +356,12 @@ func TestFocusChangeAfterActionKStopsAtKPlusOne(t *testing.T) {
 		map[string]any{"type": "keypress", "keys": []any{"C"}},
 	})
 	result := service.axBatchDecoded(actions, observation{mode: contract.ObserveNone}, "")
+	if guardAblated {
+		if result.IsError || len(backend.actionRequests) != 3 {
+			t.Fatalf("guard ablation stopped the batch after %d keys: %#v", len(backend.actionRequests), result.StructuredContent)
+		}
+		return
+	}
 	if !result.IsError || result.StructuredContent[contract.AXPublicErrorCodeKey] != contract.AXCodeWindowChanged {
 		t.Fatalf("focus change after action 2: %#v", result.StructuredContent)
 	}

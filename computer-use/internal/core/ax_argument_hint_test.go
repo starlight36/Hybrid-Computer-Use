@@ -14,6 +14,17 @@ import (
 // TestEveryAXArgumentErrorHintDecodes checks that the table reaches every
 // axInvalid call in ax_public_request.go.
 var axBadCalls = []string{
+	`{"mode":"observe","read_text":{"field":"value"}}`,
+	`{"mode":"observe","root":"r1","read_text":{"field":"value"},"scope":"window"}`,
+	`{"mode":"observe","root":"r1","read_text":{"field":"value"},"app":"Editor"}`,
+	`{"mode":"observe","root":"r1","read_text":{"field":"value"},"observe":"tree"}`,
+	`{"mode":"observe","root":"r1","read_text":null}`,
+	`{"mode":"observe","root":"r1","read_text":{}}`,
+	`{"mode":"observe","root":"r1","read_text":{"field":"bad"}}`,
+	`{"mode":"observe","root":"r1","read_text":{"field":"value","start":-1}}`,
+	`{"mode":"observe","root":"r1","read_text":{"field":"value","limit":4001}}`,
+	`{"mode":"observe","root":"r1","read_text":{"field":"value","limit":true}}`,
+	`{"mode":"observe","root":"r1","read_text":{"field":"value","extra":true}}`,
 	// mode
 	`{}`,
 	`{"mode":"assert_ax"}`,
@@ -77,6 +88,7 @@ var axBadCalls = []string{
 	`{"mode":"act","actions":[{"type":"activate","ref":"w3","window_ref":"w3"}]}`,
 	`{"mode":"act","actions":[{"type":"click","ref":"r??"}]}`,
 	`{"mode":"act","actions":[{"type":"click","ref":"w1"}]}`,
+	`{"mode":"act","actions":[{"type":"click","ref":"r1","allow_global_input":"false"}]}`,
 	`{"mode":"act","actions":[{"type":"close","ref":"r1"}]}`,
 	`{"mode":"act","actions":[{"type":"click"}]}`,
 	`{"mode":"act","actions":[{"type":"set_value","ref":"r1"}]}`,
@@ -130,8 +142,53 @@ var axBadCalls = []string{
 // Every invalid_argument from the decoder has a hint that decodes: a whole
 // call (starting with "mode") decodes as is; a fragment decodes when it
 // replaces the object at the error path.
+// axAblatedBadCalls reach the rejection sites that exist only under an
+// ablation (COMPUTER_USE_ABLATE).
+var axAblatedBadCalls = map[string][]string{
+	contract.AblateWait: {
+		`{"mode":"act","actions":[{"type":"close","ref":"w1"},{"type":"click","ref":"r1"}]}`,
+		`{"mode":"observe","app":"x","observe":"none"}`,
+		`{"mode":"assert_ax"}`,
+	},
+	contract.AblateBatching + "," + contract.AblateWait: {
+		`{"mode":"act","actions":[{"type":"click","ref":"r1"},{"type":"click","ref":"r2"}]}`,
+	},
+	contract.AblateDiff: {
+		`{"mode":"act","actions":[{"type":"click","ref":"r1"}],"observe":"none"}`,
+		`{"mode":"observe","app":"x","observe":"diff"}`,
+	},
+}
+
 func TestEveryAXArgumentErrorHintDecodes(t *testing.T) {
 	reached := map[int]bool{}
+	checkAXBadCalls(t, axBadCalls, reached)
+	for ablation, calls := range axAblatedBadCalls {
+		t.Run(ablation, func(t *testing.T) {
+			t.Setenv(contract.AblationEnv, ablation)
+			checkAXBadCalls(t, calls, reached)
+		})
+	}
+	source, readErr := os.ReadFile("ax_public_request.go")
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	var missed []string
+	for index, line := range strings.Split(string(source), "\n") {
+		if strings.Contains(line, "axInvalid(") && !strings.Contains(line, "func axInvalid(") &&
+			!strings.HasPrefix(strings.TrimSpace(line), "//") && !reached[index+1] {
+			missed = append(missed, strings.TrimSpace(line))
+		}
+	}
+	sort.Strings(missed)
+	if len(missed) > 0 {
+		t.Fatalf("no bad call reaches these rejection sites:\n%s", strings.Join(missed, "\n"))
+	}
+}
+
+// checkAXBadCalls decodes each call, checks that its hint decodes, and
+// records the decoder lines that rejected it.
+func checkAXBadCalls(t *testing.T, calls []string, reached map[int]bool) {
+	t.Helper()
 	first := false
 	// Only the first rejection of a call is its error site; later ones come
 	// from the decodes that derive the hint.
@@ -142,7 +199,7 @@ func TestEveryAXArgumentErrorHintDecodes(t *testing.T) {
 		first = false
 	}
 	defer func() { axInvalidHook = nil }()
-	for _, raw := range axBadCalls {
+	for _, raw := range calls {
 		args := decodeTestArguments(t, raw)
 		first = true
 		_, err := DecodeAXRequest(args)
@@ -159,21 +216,6 @@ func TestEveryAXArgumentErrorHintDecodes(t *testing.T) {
 		if hintErr := axHintDecodeError(args, err); hintErr != nil {
 			t.Fatalf("%s: hint %s for %s does not decode: %s (%s)", label, err.Hint, err.path, hintErr.Message, hintErr.path)
 		}
-	}
-	source, readErr := os.ReadFile("ax_public_request.go")
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	var missed []string
-	for index, line := range strings.Split(string(source), "\n") {
-		if strings.Contains(line, "axInvalid(") && !strings.Contains(line, "func axInvalid(") &&
-			!strings.HasPrefix(strings.TrimSpace(line), "//") && !reached[index+1] {
-			missed = append(missed, strings.TrimSpace(line))
-		}
-	}
-	sort.Strings(missed)
-	if len(missed) > 0 {
-		t.Fatalf("no bad call reaches these rejection sites:\n%s", strings.Join(missed, "\n"))
 	}
 }
 

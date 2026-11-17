@@ -24,23 +24,24 @@ const (
 // Public AX error codes. Internal failure codes stay in telemetry; the model
 // sees only these.
 const (
-	AXCodeInvalidArgument  = "invalid_argument"
-	AXCodeStaleRef         = "stale_ref"
-	AXCodeWindowChanged    = "window_changed"
-	AXCodeWaitTimeout      = "wait_timeout"
-	AXCodeEffectUnknown    = "effect_unknown"
-	AXCodeAppUnavailable   = "app_unavailable"
-	AXCodeRuntimeError     = "runtime_error"
-	AXCodeAmbiguousWindow  = "ambiguous_window"
-	AXCodeWindowNotFound   = "window_not_found"
-	AXCodeNoFocusedWindow  = "no_focused_window"
-	AXModeApps             = "apps"
-	AXDefaultFindPageSize  = 20
-	AXDefaultWaitTimeout   = 5000
-	AXPublicErrorCodeKey   = "public_error_code"
-	AXPublicErrorPathKey   = "public_error_path"
-	AXPublicErrorHintKey   = "public_error_hint"
-	AXPublicErrorDetailKey = "public_error_message"
+	AXCodeInvalidArgument      = "invalid_argument"
+	AXCodeStaleRef             = "stale_ref"
+	AXCodeWindowChanged        = "window_changed"
+	AXCodeWaitTimeout          = "wait_timeout"
+	AXCodeEffectUnknown        = "effect_unknown"
+	AXCodeGlobalInputForbidden = "global_input_forbidden"
+	AXCodeAppUnavailable       = "app_unavailable"
+	AXCodeRuntimeError         = "runtime_error"
+	AXCodeAmbiguousWindow      = "ambiguous_window"
+	AXCodeWindowNotFound       = "window_not_found"
+	AXCodeNoFocusedWindow      = "no_focused_window"
+	AXModeApps                 = "apps"
+	AXDefaultFindPageSize      = 20
+	AXDefaultWaitTimeout       = 5000
+	AXPublicErrorCodeKey       = "public_error_code"
+	AXPublicErrorPathKey       = "public_error_path"
+	AXPublicErrorHintKey       = "public_error_hint"
+	AXPublicErrorDetailKey     = "public_error_message"
 )
 
 var AXActionTypes = []string{

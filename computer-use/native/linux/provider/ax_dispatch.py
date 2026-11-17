@@ -21,6 +21,7 @@ from .ax_select import perform_select
 from .ax_node_properties import (
     parse_text_limit,
     positive_int,
+    read_element_text,
 )
 
 from .x11_windows import (
@@ -34,9 +35,11 @@ from .desktop_layout import x11_root_window_state
 
 from .app_resolver import app_window_inventory, list_apps_inventory, windowless_snapshot
 from .native_windows import native_window_for_operation, perform_native_window_action
+from .guard_shadow import shadow_guard
 from .element_resolver import (
     find_element_at_snapshot_path,
     resolve_semantic_target,
+    shadow_semantic_refusal,
 )
 from .window_resolver import (
     perform_ax_window_action,
@@ -98,6 +101,11 @@ def _verify_expected_window(window, expectation):
         and current_role == expected_role
     )
     if not common_matches or (transient and not transient_matches):
+        if shadow_guard(
+            "ax", "batch_window", "logical_window_changed_before_input",
+            expected_role=expected_role, current_role=current_role,
+        ):
+            return
         raise OperationFailure(
             "stale_target: the batch logical window changed before keyboard "
             "input; no input was emitted.",
@@ -298,7 +306,7 @@ def _resolve_target_operation(operation):
             input_events_emitted=False,
         )
     (
-        _element,
+        element,
         element_record,
         _semantic_note,
         _window,
@@ -312,10 +320,14 @@ def _resolve_target_operation(operation):
         operation.get("known_refs"),
         operation,
     )
-    return {
+    response = {
         "ok": True,
         "resolvedElement": element_record,
     }
+    text_read = (operation.get("observation") or {}).get("text_read")
+    if text_read is not None:
+        response["textRead"] = read_element_text(element, text_read)
+    return response
 
 
 def _perform_ax_action(
@@ -496,21 +508,28 @@ def _resolve_action_target(app, operation, operation_kind, action_input):
         bounds = operation.get("window_bounds") or window_bounds(
             app, window_index, window)
     if semantic_target is not None and operation_kind != "window_action":
-        (
-            element,
-            element_record,
-            semantic_note,
-            window,
-            bounds,
-        ) = resolve_semantic_target(
-            app,
-            window_index,
-            window,
-            bounds,
-            semantic_target,
-            operation.get("known_refs"),
-            operation,
-        )
+        try:
+            (
+                element,
+                element_record,
+                semantic_note,
+                window,
+                bounds,
+            ) = resolve_semantic_target(
+                app,
+                window_index,
+                window,
+                bounds,
+                semantic_target,
+                operation.get("known_refs"),
+                operation,
+            )
+        except OperationFailure as refused:
+            shadowed = shadow_semantic_refusal(
+                app, window_index, window, bounds, semantic_target, refused)
+            if shadowed is None:
+                raise
+            element, element_record, window, bounds = shadowed
     elif semantic_target is None and action_input.get("window_centre"):
         element = None
     elif semantic_target is None:
@@ -547,10 +566,17 @@ def _resolve_select_end(app, operation, action_input, window, bounds):
             failure_phase="precondition",
             input_events_emitted=False,
         )
-    to_element, _record, _note, to_window, _bounds = resolve_semantic_target(
-        app, window_index, window, bounds, to_target,
-        operation.get("known_refs"), operation,
-    )
+    try:
+        to_element, _record, _note, to_window, _bounds = resolve_semantic_target(
+            app, window_index, window, bounds, to_target,
+            operation.get("known_refs"), operation,
+        )
+    except OperationFailure as refused:
+        shadowed = shadow_semantic_refusal(
+            app, window_index, window, bounds, to_target, refused)
+        if shadowed is None:
+            raise
+        to_element, _record, to_window, _bounds = shadowed
     if provider_object_path(to_window) != window_path:
         raise OperationFailure(
             "select_invalid_range: to_ref is in a different window than ref; "

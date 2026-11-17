@@ -6,6 +6,7 @@
 from .foundation import (
     Atspi,  # pyright: ignore[reportAttributeAccessIssue]
     DEFAULT_TEXT_LIMIT,
+    OBJECT_REPLACEMENT,
     TOP_LEVEL_CONTAINER_ROLES,
     has_editable_text_iface,
     has_text_iface,
@@ -26,11 +27,14 @@ from .ax_node_properties import (
     accessible_id,
     element_value,
     node_actions,
-    node_description,
+    plain_text_from_rich_text,
     placeholder_text,
     state_segment,
     text_attributes,
 )
+
+
+RELATION_TARGET_LIMIT = 16
 
 
 class StableIndexer:
@@ -104,7 +108,7 @@ def labelled_by_name(node):
         kind = safe(lambda: relation.get_relation_type())
         if kind != Atspi.RelationType.LABELLED_BY:
             continue
-        count = safe(lambda: relation.get_n_targets(), 0) or 0
+        count = min(int(safe(lambda: relation.get_n_targets(), 0) or 0), RELATION_TARGET_LIMIT)
         for index in range(count):
             target = safe(lambda: relation.get_target(index))
             if target is None:
@@ -420,7 +424,7 @@ def editable_text_role(node, role):
     return "entry"
 
 
-def semantic_relations(node, text_limit=DEFAULT_TEXT_LIMIT):
+def semantic_relations(node, text_limit=DEFAULT_TEXT_LIMIT, labelled_names=None):
     """Return bounded relation facts for retained nodes only.
 
     Relations are evidence, not a replacement address. Targets stay descriptive
@@ -453,7 +457,7 @@ def semantic_relations(node, text_limit=DEFAULT_TEXT_LIMIT):
         label = wanted.get(kind)
         if not label:
             continue
-        count = min(int(safe(lambda: relation.get_n_targets(), 0) or 0), 16)
+        count = min(int(safe(lambda: relation.get_n_targets(), 0) or 0), RELATION_TARGET_LIMIT)
         targets = []
         for index in range(count):
             try:
@@ -464,21 +468,25 @@ def semantic_relations(node, text_limit=DEFAULT_TEXT_LIMIT):
             if target is None:
                 complete = False
                 continue
+            full_name = str(safe(lambda: node_name(target), "") or "")
+            if label == "labelled-by" and labelled_names is not None and full_name.strip():
+                labelled_names.append(full_name.strip())
+            relation_limit = 160 if text_limit is None else min(text_limit, 160)
             targets.append({
                 "role": str(safe(lambda: node_role(target), "") or ""),
                 "name": limit_text(
                     str(
-                        safe(lambda: node_name(target), "")
+                        full_name
                         or safe(
                             lambda: element_value(
                                 target,
-                                text_limit=min(text_limit, 160),
+                                text_limit=relation_limit,
                             ),
                             "",
                         )
                         or ""
                     ),
-                    text_limit=min(text_limit, 160),
+                    text_limit=relation_limit,
                 ),
                 "providerBusName": provider_bus_name(target),
                 "providerObjectPath": provider_object_path(target),
@@ -505,14 +513,10 @@ def record_for(node, index, path, window_bounds, text_limit=DEFAULT_TEXT_LIMIT,
     # LibreOffice ATK bridge.
     actions, has_click_action = node_actions(node)
     own_name = str(facts.value("name", "") or "")
+    labelled_names = []
     relations, relations_complete = semantic_relations(
-        node, text_limit=text_limit
+        node, text_limit=text_limit, labelled_names=labelled_names
     )
-    labelled_names = [
-        str(target.get("name") or "").strip()
-        for target in relations.get("labelled-by", [])
-        if str(target.get("name") or "").strip()
-    ]
     combo = gtk_combo_partner(node, role)
     role = top_level_window_role(node, editable_text_role(node, role))
     if combo is not None:
@@ -533,6 +537,22 @@ def record_for(node, index, path, window_bounds, text_limit=DEFAULT_TEXT_LIMIT,
             full_name = content_name(node, role)
             name_source = "content" if full_name else ""
     name = limit_text(full_name, text_limit=text_limit)
+    description_read = (None, "unavailable")
+    if callable(getattr(node, "get_description", None)):
+        description_read = facts.strict("description")
+    full_description = plain_text_from_rich_text(str(description_read[0] or ""))
+    text_lengths = {}
+    name_read = facts.strict("name")
+    if name_read[1] is None and isinstance(name_read[0], str):
+        text_lengths["name"] = len(full_name)
+    if description_read[1] is None and isinstance(description_read[0], str):
+        text_lengths["description"] = len(full_description)
+    text_truncated = [
+        field for field, full_text in (("name", full_name), ("description", full_description))
+        if text_limit is not None
+        and len(full_text.replace(OBJECT_REPLACEMENT, "")) > text_limit
+    ]
+    protected = role.strip().lower().replace("_", " ") == "password text"
     record = {
         "index": index,
         "runtimeId": path[:],
@@ -549,7 +569,9 @@ def record_for(node, index, path, window_bounds, text_limit=DEFAULT_TEXT_LIMIT,
         "controlType": role,
         "localizedControlType": role,
         "className": str(safe(node.get_toolkit_name, "") or ""),
-        "value": element_value(node, text_limit=text_limit, role=role),
+        "value": "" if protected else element_value(
+            node, text_limit=text_limit, role=role, text_lengths=text_lengths,
+            text_truncated=text_truncated),
         "nativeWindowHandle": 0,
         "frame": bounds,
         "actions": actions,
@@ -557,9 +579,9 @@ def record_for(node, index, path, window_bounds, text_limit=DEFAULT_TEXT_LIMIT,
             node, has_click_action=has_click_action, borrowed_name=borrowed,
             facts=facts,
         ),
-        "description": node_description(
-            node, text_limit=text_limit, facts=facts
-        ),
+        "description": limit_text(full_description, text_limit=text_limit),
+        "textLengths": text_lengths,
+        "textTruncated": text_truncated,
         "placeholder": placeholder_text(
             node, text_limit=text_limit, role=role
         ),
@@ -569,7 +591,7 @@ def record_for(node, index, path, window_bounds, text_limit=DEFAULT_TEXT_LIMIT,
         # them from the focused text node does not work because the
         # LibreOffice root pane also reports FOCUSED, and a separate full-tree
         # scan is slow and could miss the target paragraph.
-        "textAttributes": text_attributes(node),
+        "textAttributes": None if protected else text_attributes(node),
         "relations": relations,
         "relationReadComplete": relations_complete,
         "nameSource": name_source,
@@ -581,6 +603,9 @@ def record_for(node, index, path, window_bounds, text_limit=DEFAULT_TEXT_LIMIT,
         if identity is not None:
             record["editTarget"] = identity
             record["value"] = element_value(editor, text_limit=text_limit)
+            text_lengths.pop("value", None)
+            if "value" in text_truncated:
+                text_truncated.remove("value")
     # When the name is truncated, also store a hash of the full name.
     #
     # Identity checks compare the live full name, which never equals the

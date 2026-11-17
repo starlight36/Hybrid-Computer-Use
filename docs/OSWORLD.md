@@ -220,13 +220,42 @@ The gateway defaults to the Docker bridge address at the agent's port;
 `--result-dir`. `--channels a11y,keyboard` or `gui,keyboard` exposes
 one channel only; `--instructions-file ""` runs without a profile.
 
+`--ablate` removes HCU mechanisms from the computer-use server: a
+comma-separated subset of `batching`, `wait`, `diff` and `guard`. With
+`diff` removed, an `act` returns the whole current tree of its window in
+place of the change report and diff, and `observe` always repeats the tree.
+`effect_unknown` in the act's evidence and the message of a settle wait
+step are kept: the first is execution evidence and the second belongs to
+`wait`.
+The runner
+sets `COMPUTER_USE_ABLATE` in the MCP server environment of every harness and
+gives the agent copies of `instructions/base.md` and `instructions/hybrid.md`
+without the passages that describe the removed mechanisms. For each of
+`batching`, `wait` and `diff` the guide instead gets one sentence that
+states how the ablated `act` behaves, as the AX tool description does, so
+the agent does not learn the change from rejected calls. It writes the
+copies to `ablated-instructions/` in the task's result directory. Other
+guides, `--instructions-file ""` and `--code-mode` are refused with
+`--ablate`, because they can still describe a removed mechanism. With `guard`
+removed, the server logs the guard decisions in the guest, and the runner
+copies the log to `guard.jsonl` in the result directory. Without `--ablate`
+the harness configurations do not change. The preflight probe also checks
+that the server applies the ablation: it sends one call per removed
+mechanism and requires each to be refused, and it requires the server to
+refuse an unknown `COMPUTER_USE_ABLATE` value. A build without the switches
+therefore fails preparation instead of running full HCU under an ablation
+label. `meta.json` records the SHA-256 of the MCP binary.
+
 ## Run a panel
 
 A run is one JSON config. Relative paths in it are relative to the config
 file; omitted paths default to the repository's `artifacts/`, `runs/`,
 `assets/` and `instructions/`. See
 [`configs/osworld-v1-codex-queue.example.json`](../configs/osworld-v1-codex-queue.example.json)
-for the 20-task V1 panel.
+for the 20-task V1 panel. [`configs/ablation/`](../configs/ablation/) holds
+the same panel for each mechanism-ablation group. Groups that share one
+gateway must share its `--out` file: set the same `token_log` in each config.
+A task fails before its agent starts when the gateway writes another file.
 
 | Key | Meaning |
 | --- | --- |
@@ -238,6 +267,7 @@ for the 20-task V1 panel.
 | `max_active_tasks`, `launch_stagger_seconds` | Concurrency |
 | `gateway`, `token_log`, `results_dir`, `artifact_dir`, `asset_cache`, `offline_assets` | Optional overrides |
 | `agent_binary`, `mcp_binary`, `instructions_file`, `base_instructions_file`, `channels` | Optional agent overrides |
+| `ablate` | Removed HCU mechanisms, as a list or a comma-separated string (see `--ablate`) |
 
 ```bash
 $PY -m hcu.osworld.run_queue configs/osworld-v1-codex-queue.example.json --dry-run
@@ -258,10 +288,11 @@ runs/<run_id>/
   config.json            the config this directory belongs to
   gateway-tokens.jsonl   gateway token log (default location)
   tasks/<task-id>/
-    result.json          the outcome: status, score, termination_reason, usage
+    result.json          the outcome: status, score, termination_reason, usage, ablate
     meta.json            guest and runtime diagnostics
     agent.jsonl, phase-*-turn-*-*  agent traces per turn
     final-*.png          screenshots before and after evaluation
+    guard.jsonl          guard decisions, only with guard ablated
   logs/<task-id>.log     runner output
   retries/<task-id>-<n>/ attempts interrupted by infrastructure, not scored
   QUEUE_STATUS.md

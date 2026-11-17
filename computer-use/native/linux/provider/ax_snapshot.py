@@ -231,6 +231,19 @@ def render_tree(root, window_bounds, root_path, text_limit=DEFAULT_TEXT_LIMIT,
         if focus_probe is not None:
             focus_probe.visit(facts)
 
+        if (depth > 0 and facts.has_state(Atspi.StateType.MODAL)
+                and facts.has_state(Atspi.StateType.SHOWING)):
+            annotations.append({
+                "parentRuntimeId": path[:],
+                "kind": "hidden_children",
+                "count": 1,
+                "reason": "modal_dialog",
+                "detail": (
+                    "A modal dialog can hide other controls in this window; "
+                    "their absence does not prove that they were removed."
+                ),
+            })
+
         # Pruning keeps only nodes with an interactive role that are visible
         # on screen. Only the node's own line is dropped and its children are
         # still visited: intermediate containers are often the parents of

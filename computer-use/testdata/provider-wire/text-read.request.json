@@ -1,0 +1,25 @@
+{
+  "protocol": "computer-use-provider",
+  "schema_version": 2,
+  "request_id": "req-text",
+  "operation": "resolve_and_act",
+  "action": {
+    "protocol_version": 2,
+    "intent": "resolve_target",
+    "app": "Editor",
+    "target": {
+      "selector": "paragraph",
+      "windowHandle": "w2:fixture",
+      "providerBusName": ":1.42",
+      "providerObjectPath": "/org/a11y/paragraph",
+      "processGeneration": "pid:42:start:100",
+      "role": "paragraph",
+      "hasName": false
+    },
+    "observation": {
+      "text_read": {"field": "value", "start": 1, "limit": 3},
+      "include_screenshot": false,
+      "capture_snapshot": false
+    }
+  }
+}

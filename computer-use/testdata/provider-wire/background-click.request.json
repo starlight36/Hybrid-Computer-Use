@@ -1,0 +1,25 @@
+{
+  "protocol": "computer-use-provider",
+  "schema_version": 2,
+  "request_id": "background-click",
+  "operation": "resolve_and_act",
+  "action": {
+    "protocol_version": 2,
+    "intent": "click",
+    "app": "Editor",
+    "target": {
+      "selector": "page tab \"Controls\"",
+      "windowHandle": "w2:0123456789abcdef0123456789abcdef",
+      "role": "page tab",
+      "name": "Controls",
+      "hasName": true
+    },
+    "input": {
+      "allow_global_input": false,
+      "click_count": 1,
+      "mouse_button": "left",
+      "click_method": "auto"
+    },
+    "observation": {}
+  }
+}

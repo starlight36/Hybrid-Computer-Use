@@ -9,7 +9,7 @@ import (
 // tool schemas, the records envelope and the error table below. Adding an
 // optional field or operation raises the minor number; removing or changing
 // one raises the major number.
-const ContractVersion = "1.0"
+const ContractVersion = "1.1"
 
 // AXCodeGUIFrameStale is the GUI code for coordinates that refer to a
 // screenshot that no longer matches the desktop layout. Nothing was sent.
@@ -30,18 +30,19 @@ type PublicError struct {
 }
 
 var PublicErrorCodes = map[string]PublicError{
-	AXCodeInvalidArgument:   {2, "no", "fix the argument named by path; hint is a corrected call"},
-	AXCodeWaitTimeout:       {3, "maybe", "observe again; completed counts the steps that ran and the message says what the wait saw"},
-	AXCodeStaleRef:          {4, "no", "observe or find again and use the new ref; refs never rebind"},
-	AXCodeGUIFrameStale:     {4, "no", "take a new GUI screenshot and plan coordinates from it"},
-	AXCodeWindowChanged:     {5, "maybe", "observe before retrying; do not repeat the batch blindly"},
-	AXCodeEffectUnknown:     {5, "maybe", "observe before retrying; input may have taken effect"},
-	AXCodeAppUnavailable:    {6, "no", "list apps; the application is not running or not accessible"},
-	AXCodeAmbiguousWindow:   {6, "no", "use a longer title or the wN from apps"},
-	AXCodeWindowNotFound:    {6, "no", "list apps and use a wN or an exact title"},
-	AXCodeNoFocusedWindow:   {6, "no", "activate a window first or pass window_ref"},
-	AXCodeRuntimeError:      {10, "maybe", "retry reads later; observe before retrying input"},
-	GUICodePermissionDenied: {6, "no", GUIPermissionHint},
+	AXCodeInvalidArgument:      {2, "no", "fix the argument named by path; hint is a corrected call"},
+	AXCodeWaitTimeout:          {3, "maybe", "observe again; completed counts the steps that ran and the message says what the wait saw"},
+	AXCodeStaleRef:             {4, "no", "observe or find again and use the new ref; refs never rebind"},
+	AXCodeGUIFrameStale:        {4, "no", "take a new GUI screenshot and plan coordinates from it"},
+	AXCodeWindowChanged:        {5, "maybe", "observe before retrying; do not repeat the batch blindly"},
+	AXCodeEffectUnknown:        {5, "maybe", "observe before retrying; input may have taken effect"},
+	AXCodeGlobalInputForbidden: {5, "maybe", "the refused action sent no input; check completed and observe before replanning; keep allow_global_input false unless global input is authorized"},
+	AXCodeAppUnavailable:       {6, "no", "list apps; the application is not running or not accessible"},
+	AXCodeAmbiguousWindow:      {6, "no", "use a longer title or the wN from apps"},
+	AXCodeWindowNotFound:       {6, "no", "list apps and use a wN or an exact title"},
+	AXCodeNoFocusedWindow:      {6, "no", "activate a window first or pass window_ref"},
+	AXCodeRuntimeError:         {10, "maybe", "retry reads later; observe before retrying input"},
+	GUICodePermissionDenied:    {6, "no", GUIPermissionHint},
 }
 
 // DescribeContract is the machine-readable contract: what `schema` prints

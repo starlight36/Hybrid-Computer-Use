@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -33,6 +34,7 @@ var crossFieldRuleCodes = map[string]bool{
 	contract.ArgumentRuleTextBudget:      true,
 	contract.ArgumentRuleRefOwnsIdentity: true,
 	contract.ArgumentRuleWaitBudget:      true,
+	contract.ArgumentRuleOneInputStep:    true,
 	// The flat AX schema has no oneOf or if/then, so rules that depend on
 	// the value of mode or of an action type are declared rules of
 	// the AX decoder: which fields a mode or type accepts or requires,
@@ -103,6 +105,10 @@ type runtimeVerdict struct {
 type probeReached struct{}
 
 type probeBackend struct{ *recordingPlatformBackend }
+
+func (probeBackend) HostInfo() HostBackendInfo {
+	return HostBackendInfo{Platform: "linux"}
+}
 
 func (probeBackend) ObserveApps(ProviderObserveAppsRequest) (ProviderAccessibilityResult, error) {
 	panic(probeReached{})
@@ -213,6 +219,22 @@ func checkConsistency(t testing.TB, sample consistencySample) *consistencyMismat
 }
 
 func TestPublishedSchemaMatchesRuntimeAcceptance(t *testing.T) {
+	checkPublishedSchemaMatchesRuntime(t)
+}
+
+// Each ablation changes the schema and the decoder together; they must
+// still accept the same calls.
+func TestAblatedSchemaMatchesRuntimeAcceptance(t *testing.T) {
+	for _, ablation := range append(append([]string{}, contract.AblationNames...), "batching,wait,diff,guard") {
+		t.Run(ablation, func(t *testing.T) {
+			t.Setenv(contract.AblationEnv, ablation)
+			t.Setenv(contract.GuardLogEnv, filepath.Join(t.TempDir(), "guard.jsonl"))
+			checkPublishedSchemaMatchesRuntime(t)
+		})
+	}
+}
+
+func checkPublishedSchemaMatchesRuntime(t *testing.T) {
 	samples := consistencySamples(t)
 	if len(samples) < 1000 {
 		t.Fatalf("only %d consistency samples were generated", len(samples))

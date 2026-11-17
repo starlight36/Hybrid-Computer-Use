@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sync"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
@@ -36,24 +37,38 @@ type ArgumentError struct {
 
 func (e *ArgumentError) Error() string { return e.Message }
 
-var publicInputSchemas struct {
-	once    sync.Once
+type compiledInputSchemas struct {
 	schemas map[string]*jsonschema.Schema
 	err     error
+}
+
+// publicInputSchemas holds the compiled schemas per COMPUTER_USE_ABLATE
+// value, since ablations change the published schemas.
+var publicInputSchemas struct {
+	mu         sync.Mutex
+	byAblation map[string]*compiledInputSchemas
 }
 
 // CompiledInputSchema returns the compiled published input schema of a
 // public tool, or nil for a name without one. All schemas are compiled once,
 // on first use.
 func CompiledInputSchema(tool string) (*jsonschema.Schema, error) {
-	publicInputSchemas.once.Do(func() {
-		publicInputSchemas.schemas, publicInputSchemas.err =
-			CompileInputSchemas(AllToolDefinitions())
-	})
-	if publicInputSchemas.err != nil {
-		return nil, publicInputSchemas.err
+	key := os.Getenv(AblationEnv)
+	publicInputSchemas.mu.Lock()
+	compiled := publicInputSchemas.byAblation[key]
+	if compiled == nil {
+		compiled = &compiledInputSchemas{}
+		compiled.schemas, compiled.err = CompileInputSchemas(AllToolDefinitions())
+		if publicInputSchemas.byAblation == nil {
+			publicInputSchemas.byAblation = map[string]*compiledInputSchemas{}
+		}
+		publicInputSchemas.byAblation[key] = compiled
 	}
-	return publicInputSchemas.schemas[tool], nil
+	publicInputSchemas.mu.Unlock()
+	if compiled.err != nil {
+		return nil, compiled.err
+	}
+	return compiled.schemas[tool], nil
 }
 
 func CompileInputSchemas(tools []ToolDefinition) (map[string]*jsonschema.Schema, error) {

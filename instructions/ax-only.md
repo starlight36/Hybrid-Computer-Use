@@ -37,8 +37,11 @@ option. Follow the current tool schema for argument shapes and actions.
 - Actions take current `rN` element refs or `wN` window refs, copied exactly.
   `activate` and `close` also take a window title substring. `keypress` and
   `type` without `ref` go to the window that has focus.
-- Batch known actions within one window while later refs and focus should
-  remain valid. End the batch at an action that can open, close, replace, or
+- Batch known actions while later refs and focus should remain valid.
+  `activate` with a `wN` or title switches the batch target for later refs
+  and ref-less steps. Before using refs from another window, activate that
+  window; activate the previous window again to reuse its refs.
+  End the batch at an action that can open, close, replace, or
   navigate a window; `close` is last.
 - Semantic click may activate a selectable item, not merely select it. When
   a later action depends on a state that may arrive late, put a `wait` step

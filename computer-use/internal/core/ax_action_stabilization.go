@@ -204,7 +204,7 @@ func postActionWindowIdentityStabilizationTrigger(
 	after *AppSnapshot,
 	obs observation,
 ) string {
-	if obs.resolvedMode() != contract.ObserveDiff ||
+	if !postActionReadStabilizes(obs.resolvedMode()) ||
 		before == nil ||
 		after == nil {
 		return ""
@@ -327,7 +327,7 @@ func shouldStabilizePostActionContent(
 	if service == nil ||
 		identityStabilized ||
 		request.WindowAction != nil ||
-		(observation{mode: request.Observe}).resolvedMode() != contract.ObserveDiff ||
+		!postActionReadStabilizes((observation{mode: request.Observe}).resolvedMode()) ||
 		after == nil ||
 		after.externalDesktopTransition {
 		return false

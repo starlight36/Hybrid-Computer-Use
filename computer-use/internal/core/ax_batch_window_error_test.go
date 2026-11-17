@@ -24,9 +24,9 @@ func TestAXCrossWindowPreflightReportsArgumentError(t *testing.T) {
 				map[string]any{"type": "click", "ref": second},
 			}
 			args := map[string]any{"mode": "act", "actions": actions}
-			wantPath, wantHint := "actions[1].ref", "separate"
+			wantPath, wantHint := "actions[1].ref", "activate"
 			if kind == "window ref action" {
-				actions[1] = map[string]any{"type": "activate", "ref": secondWindow}
+				actions[1] = map[string]any{"type": "close", "ref": secondWindow}
 			}
 			if kind == "explicit window" {
 				args["window_ref"] = secondWindow

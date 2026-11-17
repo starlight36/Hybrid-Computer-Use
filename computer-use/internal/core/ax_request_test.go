@@ -7,6 +7,38 @@ import (
 	"github.com/microsoft/Hybrid-Computer-Use/computer-use/internal/contract"
 )
 
+func TestDecodeAXGlobalInputPolicy(t *testing.T) {
+	for _, actionType := range []string{"click", "scroll"} {
+		for _, policy := range []any{nil, false, true} {
+			t.Run(actionType+"/"+contract.CompactJSON(policy), func(t *testing.T) {
+				action := map[string]any{"type": actionType, "ref": "r1"}
+				if actionType == "scroll" {
+					action["direction"] = "down"
+				}
+				if policy != nil {
+					action["allow_global_input"] = policy
+				}
+				args := map[string]any{"mode": "act", "actions": []any{action}}
+				if err := contract.ValidateToolArguments(contract.PublicToolAX, args); err != nil {
+					t.Fatalf("schema rejected policy: %v", err)
+				}
+				request, err := DecodeAXRequest(args)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got := request.actions[0].allowGlobalInput
+				if policy == nil {
+					if got != nil {
+						t.Fatalf("omitted policy became explicit: %v", *got)
+					}
+				} else if got == nil || *got != policy.(bool) {
+					t.Fatalf("lost explicit policy %v: %v", policy, got)
+				}
+			})
+		}
+	}
+}
+
 func TestDecodeAXRequestAcceptsEachMode(t *testing.T) {
 	for name, args := range map[string]map[string]any{
 		"apps":                 {"mode": "apps"},

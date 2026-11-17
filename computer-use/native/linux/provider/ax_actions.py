@@ -19,11 +19,13 @@ from .foundation import (
 from .input_primitives import (
     emit_keyboard_event,
     emit_mouse_event,
+    keypad_navigation_numlock_mask,
     require_window_focus,
 )
 
 from .tree_walk import iter_all
 from .ax_records import combo_edit_target, combo_edit_identity
+from .guard_shadow import shadow_guard
 from .input_method import InputMethodText
 
 
@@ -45,6 +47,10 @@ def resolve_combo_editor(element, record):
         return element, False
     editor = combo_edit_target(element)
     identity = combo_edit_identity(editor)
+    if (expected is not None and identity is not None and identity != expected
+            and shadow_guard("ax", "target_identity", "composite_edit_target_replaced",
+                             expected=expected, live=identity)):
+        return editor, True
     if expected is None or identity != expected:
         raise OperationFailure(
             "The combobox has no unique unchanged editable partner; no text "
@@ -120,6 +126,21 @@ def normalize_key_expression(key):
 
 # Gdk.keyval_from_name returns VoidSymbol, not 0, for an unknown name.
 GDK_VOID_SYMBOL = 0xFFFFFF
+GDK_KEY_NAMES = {
+    name[4:].lower(): getattr(Gdk, name)
+    for name in dir(Gdk) if name.startswith("KEY_")
+}
+
+
+def invalid_key(message):
+    return OperationFailure(
+        message + ". Use CTRL, SHIFT, ALT or SUPER before the main key; "
+        "use ENTER, TAB, ESC, PAGEUP/PAGE_UP, PAGEDOWN/PAGE_DOWN, "
+        "KP_ADD, KP_SUBTRACT, KP_ENTER or KP_0 through KP_9. "
+        "Use PLUS for the '+' key. Linux also accepts mapped X11 key names.",
+        failure_code="invalid_argument", failure_phase="precondition",
+        input_events_emitted=False,
+    )
 
 
 def keysym(name):
@@ -130,18 +151,12 @@ def keysym(name):
     case ("INSERT", "caps_lock"), because callers write keys the way they
     appear on the keyboard.
     """
-    candidates = [name]
-    if len(name) > 1:
-        candidates.append("_".join(part.capitalize() for part in name.split("_")))
-        # Punctuation keysyms are lowercase names ("comma", "plus").
-        candidates.append(name.lower())
-    for candidate in candidates:
-        sym = Gdk.keyval_from_name(candidate)
-        if sym and sym != GDK_VOID_SYMBOL:
-            return sym
+    sym = Gdk.keyval_from_name(name)
+    if sym and sym != GDK_VOID_SYMBOL:
+        return sym
     if len(name) == 1:
         return Gdk.unicode_to_keyval(ord(name))
-    return 0
+    return GDK_KEY_NAMES.get(name.lower(), 0)
 
 
 def keycode(name):
@@ -166,11 +181,16 @@ def keycode(name):
         raise RuntimeError("Gdk unavailable; cannot resolve keycode for: " + name)
     sym = keysym(name)
     if not sym:
-        raise RuntimeError("Unsupported key: " + name)
+        raise invalid_key("Unsupported key: " + name)
     keymap = Gdk.Keymap.get_default()
     ok, entries = keymap.get_entries_for_keyval(sym)
     if not ok or not entries:
-        raise RuntimeError("No hardware keycode mapped for key: " + name)
+        raise OperationFailure(
+            "No hardware keycode mapped for key: " + name
+            + ". Choose a key available in the desktop keyboard layout.",
+            failure_code="unsupported_action", failure_phase="precondition",
+            input_events_emitted=False,
+        )
     return int(entries[0].keycode)
 
 
@@ -182,9 +202,9 @@ def parse_key(key):
     must fail before the window is raised, not after.
     """
     normalized_expression = normalize_key_expression(key)
-    parts = [part for part in normalized_expression.split("+") if part]
-    if not parts:
-        raise RuntimeError("Unsupported key: " + str(key))
+    parts = normalized_expression.split("+")
+    if not all(parts):
+        raise invalid_key("Unsupported key expression: " + str(key))
     main = parts[-1]
     codes = []
     for modifier in parts[:-1]:
@@ -193,7 +213,7 @@ def parse_key(key):
             # Reject unknown modifiers: skipping them would silently turn a
             # typo such as "ctrl+shft+s" into a bare "s", which is confusing
             # and very hard to diagnose.
-            raise RuntimeError(
+            raise invalid_key(
                 "Unsupported modifier: {}. Use CTRL, SHIFT, ALT, or SUPER; "
                 "Control_L/Ctrl_L and GTK forms such as <Control>s are also accepted."
                 .format(modifier))
@@ -218,6 +238,8 @@ def send_key(key):
     pressed = []
     emitted = False
     primary_error = None
+    restore_numlock = 0
+    symbol = keysym(normalized)
     try:
         for code in codes:
             emitted = emit_keyboard_event(
@@ -236,6 +258,21 @@ def send_key(key):
                 "text key {!r}".format(normalized),
                 emitted,
             )
+        elif len(normalized) > 1 and not (
+                Gdk.KEY_Shift_L <= symbol <= Gdk.KEY_Hyper_R
+                or symbol in (Gdk.KEY_Num_Lock, Gdk.KEY_Scroll_Lock)):
+            restore_numlock = keypad_navigation_numlock_mask(symbol)
+            if restore_numlock:
+                emitted = emit_keyboard_event(
+                    restore_numlock, None, Atspi.KeySynthType.UNLOCKMODIFIERS,
+                    "NumLock preparation", emitted)
+            emitted = emit_keyboard_event(
+                symbol,
+                None,
+                Atspi.KeySynthType.SYM,
+                "key {!r}".format(normalized),
+                emitted,
+            )
         else:
             emitted = emit_keyboard_event(
                 keycode(normalized),
@@ -247,6 +284,14 @@ def send_key(key):
     except Exception as exc:
         primary_error = exc
 
+    if restore_numlock:
+        try:
+            emitted = emit_keyboard_event(
+                restore_numlock, None, Atspi.KeySynthType.LOCKMODIFIERS,
+                "NumLock restoration", emitted)
+        except Exception as exc:
+            if primary_error is None:
+                primary_error = exc
     # Release every pressed modifier even if one release fails. Stopping after
     # the first failed release can leave the remaining modifiers stuck.
     release_error = None
@@ -262,10 +307,10 @@ def send_key(key):
         except Exception as exc:
             if release_error is None:
                 release_error = exc
-    if primary_error is not None:
-        raise primary_error
-    if release_error is not None:
-        raise release_error
+    for error in (primary_error, release_error):
+        if error is not None:
+            error.events_emitted = bool(emitted or getattr(error, "events_emitted", False))
+            raise error
 
 
 # Keep the public keyboard-input bound; input method delivery also has a
@@ -398,14 +443,16 @@ def find_editable_text(root):
     character count stays the same, so the text is silently lost and the
     tool reports success.
 
-    The node must therefore be both EDITABLE and FOCUSED, and exactly one
-    candidate must exist. Without a clear focus owner nothing is guessed
+    The node must therefore expose Text and be both EDITABLE and FOCUSED,
+    and exactly one candidate must exist. EditableText is optional: a
+    keyboard-only editor still needs text readback. Without a clear focus
+    owner nothing is guessed
     from visibility or tree order; the caller uses the keyboard path, which
     is reported as unverified.
     """
     focused = []
     for node in iter_all(root):
-        if not (has_editable_text_iface(node) and has_text_iface(node)):
+        if not has_text_iface(node):
             continue
         if not state_contains(node, Atspi.StateType.EDITABLE):
             continue

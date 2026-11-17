@@ -26,9 +26,10 @@ type reportWindow struct {
 // reads the window back, as the real provider does.
 type reportBackend struct {
 	recordingPlatformBackend
-	windows []reportWindow
-	checked bool
-	value   string
+	windows    []reportWindow
+	checked    bool
+	value      string
+	textStates string
 	// onAction mutates the state when input arrives.
 	onAction func(b *reportBackend)
 	// skipReadback makes an action return no snapshot (observe "none").
@@ -47,6 +48,7 @@ func (b *reportBackend) snapshot(selected reportWindow) *ProviderSnapshot {
 		checked = "[checked]"
 	}
 	setValue := true
+	textStates := FirstNonEmpty(b.textStates, "[editable focusable]")
 	snapshot := &AppSnapshot{
 		App: AppDescriptor{Name: "Editor", PID: 10, ProviderBusName: ":1.84",
 			ProcessGeneration: "pid:10:start:100", InputCapable: true},
@@ -55,14 +57,14 @@ func (b *reportBackend) snapshot(selected reportWindow) *ProviderSnapshot {
 		TreeLines: []string{
 			"\t0 " + selected.role + " \"" + selected.title + "\"",
 			"\t\t1 check box \"Interface\" " + checked,
-			"\t\t2 entry \"Size\" [editable]",
+			"\t\t2 entry \"Size\" " + textStates,
 			"\t\t3 push button \"OK\" [click]",
 		},
 		Elements: []ElementRecord{
 			{Index: 0, RuntimeID: []int{0}, ControlType: selected.role, Name: selected.title},
 			{Index: 1, RuntimeID: []int{0, 0}, ControlType: "check box", Name: "Interface", States: checked},
 			{Index: 2, RuntimeID: []int{0, 1}, ControlType: "entry", Name: "Size", Value: b.value,
-				States: "[editable focusable]", SetValueSupported: &setValue},
+				States: textStates, SetValueSupported: &setValue},
 			{Index: 3, RuntimeID: []int{0, 2}, ControlType: "push button", Name: "OK", States: "[has-click-action]"},
 			{Index: 4, RuntimeID: []int{0, 3}, ControlType: "label", Name: FirstNonEmpty(b.page, "General")},
 			{Index: 5, RuntimeID: []int{0, 4}, ControlType: "menu item", Name: "Edit", States: "[has-click-action]"},
@@ -271,6 +273,220 @@ func TestActReportShowsAValueChange(t *testing.T) {
 	})
 	if want := "effect: " + refs["Size"] + ` textbox "Size" value="12"→"14"`; rest[0] != want {
 		t.Fatalf("report %q want %q", rest[0], want)
+	}
+}
+
+func TestActReportClickThenRefLessType(t *testing.T) {
+	for _, outcome := range []string{"unchanged", "changed"} {
+		t.Run(outcome, func(t *testing.T) {
+			changed := outcome == "changed"
+			service, backend := reportService(t, reportMain())
+			backend.value = "1"
+			_, refs := reportObserve(t, service, "Size")
+			backend.onAction = func(backend *reportBackend) {
+				backend.textStates = "[editable focusable focused]"
+				backend.value = "12"
+				if len(backend.actionRequests) == 2 && changed {
+					backend.value = "123"
+				}
+			}
+			result := service.callTool(contract.PublicToolAX, map[string]any{
+				"mode": "act", "actions": []any{
+					map[string]any{"type": "click", "ref": refs["Size"]},
+					map[string]any{"type": "type", "text": "3"},
+				},
+			})
+			text := ResultText(result)
+			if result.IsError || len(backend.actionRequests) != 2 {
+				t.Fatalf("expected both actions to run: %s", text)
+			}
+			if !strings.Contains(text, `effect: `+refs["Size"]+` textbox "Size" active=false→true`) {
+				t.Fatalf("click focus change missing: %s", text)
+			}
+			want := "no visible change (value unchanged; text input not verified)"
+			if changed {
+				want = `value="12"→"123"`
+			}
+			if !strings.Contains(text, `effect: type `+refs["Size"]+` textbox "Size" `+want) {
+				t.Fatalf("type must compare against the read after click: %s", text)
+			}
+			assertTypeReportEvidence(t, result, changed)
+		})
+	}
+}
+
+func reportTypeSnapshot(value string) *AppSnapshot {
+	record := &ElementRecord{ControlType: "entry", Name: "Input", Value: value, States: "[editable focused]"}
+	node := &AXNode{
+		Ref: "r1", Role: "textbox", Name: "Input", SourceRecord: record,
+		States: typedAXStates(record), Capabilities: typedAXCapabilities(record, "textbox"),
+		Properties: AXProperties{Value: normalizedTreeText(value)},
+	}
+	return &AppSnapshot{WindowHandle: reportMainHandle, WindowTitle: "Report", AXSnapshot: &AXSnapshot{
+		CanonicalRoots: []*AXNode{node}, Roots: []*AXNode{node}, RefInventoryComplete: true,
+	}}
+}
+
+func assertTypeReportEvidence(t *testing.T, result ToolCallResult, observed bool) {
+	t.Helper()
+	if got := result.StructuredContent["target_effect_observed"] == true; got != observed {
+		t.Fatalf("target_effect_observed=%v want %v: %s", got, observed, ResultText(result))
+	}
+	public := ResultText(WithAXTextEvidence(PrepareAXEvidence(result)))
+	if strings.Contains(public, `"effect_unknown":true`) == observed {
+		t.Fatalf("public uncertainty disagrees with value evidence: %s", public)
+	}
+}
+
+func TestActReportTypeRequiresValueEvidence(t *testing.T) {
+	for _, ref := range []string{"", "r1"} {
+		for _, test := range []struct {
+			name, before, after, want string
+			observed                  bool
+		}{
+			{"changed", "old", "new", `value="old"→"new"`, true},
+			{"unchanged", "old", "old", "no visible change (value unchanged; text input not verified)", false},
+			{"empty before", "", "new", `unknown (value before the action is empty or unavailable); value after="new"`, false},
+			{"empty after", "old", "", "unknown (value after the action is empty or unavailable)", false},
+			{"both unavailable", "", "", "unknown (value before the action is empty or unavailable)", false},
+			{"whitespace", "old text", "old  text", `value="old text"→"old  text"`, true},
+			{"newline", "old text", "old\ntext", `value="old text"→"old\ntext"`, true},
+			{"clipped suffix", strings.Repeat("a", 80) + "b", strings.Repeat("a", 80) + "c", "value changed", true},
+		} {
+			t.Run(ref+"/"+test.name, func(t *testing.T) {
+				service := NewService()
+				before, after := reportTypeSnapshot(test.before), reportTypeSnapshot(test.after)
+				after.AXSnapshot.Roots[0].States.Active = TriFalse
+				after.AXSnapshot.Roots[0].States.Selected = TriTrue
+				service.snapshots["editor"] = after
+				trace := &actReportTrace{appToken: "editor", start: before, before: map[int]*AppSnapshot{0: before}}
+				result := service.withActReport(ToolCallResult{StructuredContent: map[string]any{
+					"input_events_emitted": true, "effect_unknown": true,
+				}}, []axBatchAction{{actionType: "type", targetRef: ref, text: "text"}}, trace)
+				assertTypeReportEvidence(t, result, test.observed)
+				if text := ResultText(result); !strings.Contains(text, `effect: type r1 textbox "Input" `+test.want) {
+					t.Fatalf("type report lacks value evidence: %s", text)
+				}
+			})
+		}
+	}
+}
+
+func TestActReportTypeMissingEvidence(t *testing.T) {
+	for _, ref := range []string{"", "r1"} {
+		for _, scenario := range []string{"no before", "no after", "same snapshot", "observe none", "target gone", "other window", "no value source"} {
+			t.Run(ref+"/"+scenario, func(t *testing.T) {
+				service := NewService()
+				before, after := reportTypeSnapshot("old"), reportTypeSnapshot("new")
+				trace := &actReportTrace{appToken: "editor", start: before, before: map[int]*AppSnapshot{0: before}}
+				reason := ""
+				switch scenario {
+				case "no before":
+					trace.before[0] = nil
+					reason = "no read before the action"
+				case "no after":
+					after = nil
+					reason = "no read after the action"
+				case "same snapshot":
+					after = before
+					reason = "no read after the action"
+				case "observe none":
+					after = before
+					trace.observe = contract.ObserveNone
+					reason = `observe "none" skipped the read after the action`
+				case "target gone":
+					after.AXSnapshot.CanonicalRoots, after.AXSnapshot.Roots = nil, nil
+					reason = "the read after the action did not include it"
+				case "other window":
+					after.WindowHandle = reportDialogHandle
+					reason = "the read after the action is of"
+				case "no value source":
+					after.AXSnapshot.Roots[0].SourceRecord = nil
+					after.AXSnapshot.Roots[0].Properties.Value = ""
+					reason = "value after the action is empty or unavailable"
+				}
+				service.snapshots["editor"] = after
+				result := service.withActReport(ToolCallResult{StructuredContent: map[string]any{
+					"input_events_emitted": true, "effect_unknown": true,
+				}}, []axBatchAction{{actionType: "type", targetRef: ref, text: "new"}}, trace)
+				text := ResultText(result)
+				if !strings.HasPrefix(text, "effect: type ") || !strings.Contains(strings.Split(text, "\n")[0], "unknown ("+reason) {
+					t.Fatalf("missing reason %q: %s", reason, text)
+				}
+				assertTypeReportEvidence(t, result, false)
+			})
+		}
+	}
+}
+
+func TestActReportRefLessTypeRequiresUniqueFocusedTextbox(t *testing.T) {
+	for _, scenario := range []string{"unfocused", "not editable", "not textbox", "two focused", "focused button too", "no ref", "incomplete", "projected roots"} {
+		t.Run(scenario, func(t *testing.T) {
+			service := NewService()
+			before, after := reportTypeSnapshot("old"), reportTypeSnapshot("new")
+			node := before.AXSnapshot.Roots[0]
+			reason := "no unique focused editable textbox in the read before the action"
+			observed := false
+			switch scenario {
+			case "unfocused":
+				node.States.Active = TriUnknown
+			case "not editable":
+				node.Capabilities.EditText = false
+			case "not textbox":
+				node.Role = "button"
+			case "two focused", "focused button too":
+				other := *node
+				other.Ref = "r2"
+				if scenario == "focused button too" {
+					other.Role = "button"
+				}
+				node.Children = []*AXNode{&other}
+			case "no ref":
+				node.Ref = ""
+				reason = "the focused editable textbox has no ref"
+			case "incomplete":
+				before.AXSnapshot.RefInventoryComplete = false
+				reason = "the read before the action is incomplete; focus uniqueness is unknown"
+			case "projected roots":
+				before.AXSnapshot.CanonicalRoots = nil
+				observed = true
+			}
+			service.snapshots["editor"] = after
+			trace := &actReportTrace{appToken: "editor", start: before, before: map[int]*AppSnapshot{0: before}}
+			result := service.withActReport(ToolCallResult{StructuredContent: map[string]any{
+				"input_events_emitted": true, "effect_unknown": true,
+			}}, []axBatchAction{{actionType: "type", text: "new"}}, trace)
+			want := "unknown (" + reason + ")"
+			if observed {
+				want = `value="old"→"new"`
+			}
+			if text := ResultText(result); !strings.Contains(strings.Split(text, "\n")[0], want) {
+				t.Fatalf("type report lacks %q: %s", want, text)
+			}
+			assertTypeReportEvidence(t, result, observed)
+		})
+	}
+}
+
+func TestActReportTypeDoesNotShareBatchValueEvidence(t *testing.T) {
+	for _, shared := range []string{"no intermediate snapshot", "reused intermediate snapshot"} {
+		t.Run(shared, func(t *testing.T) {
+			service := NewService()
+			before, after := reportTypeSnapshot("old"), reportTypeSnapshot("oldnew")
+			service.snapshots["editor"] = after
+			trace := &actReportTrace{appToken: "editor", start: before, before: map[int]*AppSnapshot{0: before}}
+			if shared == "reused intermediate snapshot" {
+				trace.before[1] = before
+			}
+			result := service.withActReport(ToolCallResult{StructuredContent: map[string]any{
+				"input_events_emitted": true, "effect_unknown": true,
+			}}, []axBatchAction{{actionType: "type", text: "new"}, {actionType: "type", text: "ignored"}}, trace)
+			text := ResultText(result)
+			if strings.Count(text, "effect: type") != 2 || strings.Count(text, " unknown (") != 2 {
+				t.Fatalf("both types need separate before/after evidence: %s", text)
+			}
+			assertTypeReportEvidence(t, result, false)
+		})
 	}
 }
 

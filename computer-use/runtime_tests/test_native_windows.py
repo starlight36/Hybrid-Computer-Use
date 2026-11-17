@@ -2,6 +2,7 @@
 """Windows of processes that export no accessibility tree."""
 
 from runtime_test_support import *  # noqa: F401,F403
+from native.linux.provider import x11_window_inventory
 
 
 def _managed(*windows):
@@ -79,6 +80,19 @@ class NativeOnlyWindowTests(AtspiPatchedTestCase):
         # The window itself says it has no tree; a toolkit without restart
         # advice adds no note.
         self.assertEqual([], inventory["notes"])
+
+    def test_unidentified_application_window_makes_coverage_explicitly_incomplete(self):
+        windows = runtime.native_only_windows(
+            [_window(0, "0x1", "Notes"), _window(30, "0x2", "Scene")], {})
+
+        self.assertEqual(["Scene"], [window["title"] for window in windows])
+        self.assertFalse(windows.complete)
+        self.assertIn('"Notes"', windows.errors[0])
+
+    def test_unidentified_dock_is_not_an_inventory_gap(self):
+        windows = runtime.native_only_windows([_window(0, "0x5", "Dock")], {})
+        self.assertEqual([], list(windows))
+        self.assertTrue(windows.complete)
 
     def test_restart_advice_stays_for_toolkits_that_can_export_a_tree(self):
         with tempfile.TemporaryDirectory() as root:
@@ -166,6 +180,47 @@ class NativeOnlyWindowTests(AtspiPatchedTestCase):
         windows = runtime.native_only_windows(_managed(_window(30, "0x1", "Main")), coverage)
         self.assertEqual([], list(windows))
         self.assertFalse(windows.complete)
+
+
+class MissingWindowPidTests(AtspiPatchedTestCase):
+    def setUp(self):
+        super().setUp()
+        x11_window_inventory._x11_window_inventory_cache.clear()
+        self.addCleanup(x11_window_inventory._x11_window_inventory_cache.clear)
+        result = subprocess.CompletedProcess([], 0,
+            "0x00000011 0 0 10 20 800 600 N/A Notes\n"
+            "0x00000022 0 42 30 40 800 600 host Editor\n")
+        patcher = mock.patch.object(x11_window_inventory.subprocess, "run", return_value=result)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        patcher = mock.patch.object(x11_window_inventory, "x11_client_pids",
+                                   return_value={"0x11": 31})
+        self.owners = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_missing_pid_is_resolved_from_x11_client_not_title(self):
+        windows = runtime._x11_managed_windows()
+
+        self.assertEqual([31, 42], [window["pid"] for window in windows])
+        self.owners.assert_called_once_with(["0x11"])
+        self.assertIs(windows, runtime._x11_managed_windows())
+        self.owners.assert_called_once()
+
+    def test_unresolved_pid_is_not_invented(self):
+        self.owners.return_value = {}
+        windows = runtime._x11_managed_windows()
+        self.assertEqual([0, 42], [window["pid"] for window in windows])
+
+    def test_recovered_identity_is_refreshed_with_the_window_inventory(self):
+        first = runtime._x11_managed_windows()[0]
+        x11_window_inventory._x11_window_inventory_cache.clear()
+        self.owners.return_value = {"0x11": 32}
+        second = runtime._x11_managed_windows()[0]
+        with mock.patch.object(runtime, "process_generation", return_value="gen"):
+            old_handle = runtime.window_handle_for_pid(first["pid"], first["id"])
+            new_handle = runtime.window_handle_for_pid(second["pid"], second["id"])
+        self.assertIsNotNone(old_handle)
+        self.assertNotEqual(old_handle, new_handle)
 
 
 class NativeWindowActionTests(AtspiPatchedTestCase):

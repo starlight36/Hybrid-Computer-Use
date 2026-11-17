@@ -363,6 +363,46 @@ try:
         raise RuntimeError("unexpected public MCP tools: " + repr(names))
     report = {"public_tools": names, "requested_protocol": config["protocol"],
               "negotiated_protocol": negotiated, "child_env_verified": True, "checks": {}}
+    ablated = [name.strip() for name in config.get("env", {}).get("COMPUTER_USE_ABLATE", "").split(",") if name.strip()]
+    if ablated:
+        # The env reached the server; check that the server applies it. A
+        # build without the switches would run full HCU under an ablation
+        # label. Each call is refused before input only when its mechanism is
+        # removed.
+        uses = {
+            "wait": ({"mode": "act", "actions": [{"type": "wait", "window": "__hcu_ablation_probe__", "timeout_ms": 100}]},
+                     {"actions[0].type"}),
+            "batching": ({"mode": "act", "actions": [{"type": "click", "ref": "r1"}, {"type": "click", "ref": "r2"}]},
+                         {"actions[1]", "actions"}),
+            "diff": ({"mode": "observe", "app": "__hcu_ablation_probe__", "observe": "diff"}, {"observe"}),
+        }
+        for name in ablated:
+            if name not in uses or "AX" not in names:
+                continue
+            arguments, paths = uses[name]
+            result = request("tools/call", {"name": "AX", "arguments": arguments})
+            evidence = {}
+            for item in result.get("content") or []:
+                try:
+                    evidence = json.loads(item.get("text", ""))
+                    break
+                except (ValueError, TypeError):
+                    continue
+            if not result.get("isError") or evidence.get("code") != "invalid_argument" or evidence.get("path") not in paths:
+                raise RuntimeError("MCP server ignores the %s ablation: %s" % (name, json.dumps(evidence)[:300]))
+        # guard changes no schema; a build that parses the switches refuses
+        # an unknown one before it answers initialize.
+        bogus = subprocess.run(
+            [config["command"], *config.get("args", [])],
+            input=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                "protocolVersion": config["protocol"], "capabilities": {},
+                "clientInfo": {"name": "osworld-v2-harness-preflight", "version": "1"}}}) + "\n",
+            env=dict(child_env, COMPUTER_USE_ABLATE="__hcu_ablation_probe__"), cwd=config.get("cwd"),
+            capture_output=True, text=True, timeout=30,
+        )
+        if '"result"' in bogus.stdout:
+            raise RuntimeError("MCP server accepts an unknown COMPUTER_USE_ABLATE value; it cannot apply ablations")
+        report["checks"]["ablation"] = "passed: " + ",".join(ablated)
     if "AX" in names:
         apps, _ = call("AX", {"mode": "apps"})
         windows = re.findall(r"^(w[1-9][0-9]*)\s+.*$", apps, re.M)

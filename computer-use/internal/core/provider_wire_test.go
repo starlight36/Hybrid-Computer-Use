@@ -13,6 +13,31 @@ import (
 
 var providerFixtureFS = os.DirFS("../..").(fs.ReadFileFS)
 
+func TestLinuxTextReadWireFixtures(t *testing.T) {
+	requestData := readProviderFixture(t, "text-read.request.json")
+	request, err := DecodeProviderWireRequest(requestData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertProviderFixtureRoundTrip(t, requestData, request)
+	responseData := readProviderFixture(t, "text-read.response.json")
+	response, err := DecodeProviderWireResponse(responseData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertProviderFixtureRoundTrip(t, responseData, response)
+	for _, field := range []string{"value", "name", "description"} {
+		request.Action.Observation.TextRead.Field = field
+		if err := request.Validate(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request.Action.Observation.TextRead.Limit = contract.AXMaxReadText + 1
+	if err := request.Validate(); err == nil {
+		t.Fatal("oversize text read accepted")
+	}
+}
+
 type providerFixtureManifest struct {
 	SchemaVersion         int                     `json:"schema_version"`
 	Protocol              string                  `json:"protocol"`
@@ -43,6 +68,75 @@ func readProviderFixture(t *testing.T, name string) []byte {
 		t.Fatal(err)
 	}
 	return data
+}
+
+func TestProviderLinuxInputFixtureCorpus(t *testing.T) {
+	var manifest struct {
+		SchemaVersion int                    `json:"schema_version"`
+		Protocol      string                 `json:"protocol"`
+		Platforms     map[string]bool        `json:"allow_global_input_platforms"`
+		Fixtures      []providerFixtureEntry `json:"fixtures"`
+	}
+	if err := strictFixtureDecode(readProviderFixture(t, "linux-input-manifest.json"), &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Protocol != ProviderProtocolName || manifest.SchemaVersion != ProviderProtocolVersion ||
+		!reflect.DeepEqual(manifest.Platforms, map[string]bool{"linux": true, "darwin": false, "windows": false}) {
+		t.Fatalf("invalid Linux input fixture contract: %#v", manifest)
+	}
+	seen := map[AccessibilityOperation]bool{}
+	for _, fixture := range manifest.Fixtures {
+		t.Run(fixture.Name, func(t *testing.T) {
+			data := readProviderFixture(t, fixture.File)
+			request, err := DecodeProviderWireRequest(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fixture.Direction != "request" || request.Operation != ProviderWireResolveAndAct || request.Action == nil {
+				t.Fatal("Linux input fixture must exercise an accessibility action")
+			}
+			assertProviderFixtureRoundTrip(t, data, request)
+			var policy *bool
+			switch request.Action.Intent {
+			case AccessibilityClick:
+				policy = request.Action.Click.AllowGlobalInput
+			case AccessibilityScroll:
+				policy = request.Action.Scroll.AllowGlobalInput
+				if request.Action.Scroll.Pages != 1.5 {
+					t.Fatal("scroll fixture must preserve fractional pages")
+				}
+			default:
+				t.Fatalf("unexpected fixture intent %s", request.Action.Intent)
+			}
+			if policy == nil || *policy {
+				t.Fatal("fixture must retain explicit false")
+			}
+			seen[request.Action.Intent] = true
+			for platform, supported := range manifest.Platforms {
+				for _, allowed := range []bool{false, true} {
+					*policy = allowed
+					backend := &recordingPlatformBackend{accessibilityResponse: &ProviderAccessibilityResult{OK: true}}
+					service := NewServiceWithBackend(&globalInputPolicyBackend{backend, platform})
+					result, err := service.callProviderAction(*request.Action)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if supported {
+						if !result.OK || len(backend.actionRequests) != 1 {
+							t.Fatalf("Linux fixture was not dispatched: %#v", result)
+						}
+					} else if result.OK || len(backend.actionRequests) != 0 || result.Failure == nil ||
+						result.Failure.Code != "invalid_argument" || result.Failure.Phase != "precondition" ||
+						result.Mutation == nil || result.Mutation.InputEventsEmitted {
+						t.Fatalf("%s silently accepted policy %t: %#v", platform, allowed, result)
+					}
+				}
+			}
+		})
+	}
+	if !reflect.DeepEqual(seen, map[AccessibilityOperation]bool{AccessibilityClick: true, AccessibilityScroll: true}) {
+		t.Fatalf("missing Linux input fixtures: %v", seen)
+	}
 }
 
 func TestProviderNativeFixtureCorpus(t *testing.T) {

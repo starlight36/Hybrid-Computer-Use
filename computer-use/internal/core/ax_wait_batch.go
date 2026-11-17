@@ -32,8 +32,9 @@ func (s *Service) preflightAXWaitRef(context *AXBatchContext, ref string) error 
 		return err
 	}
 	if context != nil && entry.WindowHandle != context.WindowHandle {
-		return fmt.Errorf("%s belongs to window %s, not the batch window %s; wait for it in its own act call",
-			ref, entry.LogicalWindowRef, context.WindowRef)
+		return axInvalid("", fmt.Sprintf("%s belongs to window %s, not the current batch window %s; activate that window before using its refs",
+			ref, entry.LogicalWindowRef, context.WindowRef),
+			"Use refs from the current window, or activate the other window before acting in it.")
 	}
 	return nil
 }
@@ -87,6 +88,10 @@ func (s *Service) rebindAfterWindowWait(
 		ProcessGeneration:  entry.ProviderWindowProcessGeneration,
 		Role:               entry.ProviderWindowRole,
 		Name:               entry.ProviderWindowName,
+	}
+	if context.report != nil {
+		context.report.appToken = context.AppToken
+		context.report.windowRef = context.WindowRef
 	}
 	// One read of the new window makes it the current state of its app, so
 	// the next step's window check and its diff start from that window.
@@ -202,6 +207,11 @@ func (s *Service) axBatchContinuityStop(
 	if continuity == axWindowSame {
 		return ToolCallResult{}, false
 	}
+	if shadowGuard("ax", "batch_window", "logical_window_"+string(continuity)+"_between_actions", map[string]any{
+		"window_ref": context.WindowRef, "next_action_index": index + 1,
+	}) {
+		return ToolCallResult{}, false
+	}
 	anyInputEmitted, anyPartialPossible, anyMutationUnknown := batchMutationSummary(actionEvidence)
 	failureCode := "stale_target"
 	messageCode := "batch_window_changed"
@@ -286,8 +296,14 @@ func (s *Service) axWaitOnly(
 			var argErr *axArgError
 			focus, argErr = s.resolveFocusedWindow()
 			if argErr != nil {
-				argErr.Message = "a wait without ref or window_ref reads the focused window, and no window has focus; " +
-					"give window_ref, or wait for a window by title. Windows:" + strings.TrimPrefix(argErr.Message[strings.Index(argErr.Message, "Windows:"):], "Windows:")
+				// Only a missing focus lists the windows; an unreadable window
+				// list keeps its own code and message.
+				if index := strings.Index(argErr.Message, "Windows:"); index >= 0 {
+					argErr.Message = "a wait without ref or window_ref reads the focused window, and no window has focus; " +
+						"give window_ref, or wait for a window by title. " + argErr.Message[index:]
+				} else {
+					argErr.Message += "; a wait without ref or window_ref reads the focused window, so give window_ref"
+				}
 				argErr.Hint = `{"mode":"act","window_ref":"w1","actions":[{"type":"wait","text":"Saved"}]}`
 				return axArgErrorResult(argErr, len(actions))
 			}

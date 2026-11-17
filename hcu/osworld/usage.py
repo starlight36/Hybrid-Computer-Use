@@ -233,3 +233,26 @@ def check_gateway_budget(health_output: str, max_model_calls: int) -> None:
             f"runner={max_model_calls}, gateway={limit!r}. "
             "Start the gateway with --max-requests-per-task equal to max_model_calls."
         )
+
+
+def check_gateway_token_log(health_output: str, token_log: Path) -> None:
+    """Fail before the agent starts if the gateway logs to another file.
+
+    The runner reads its usage and retry exhaustion from ``token_log``. Runs
+    that share a gateway with a different ``--out`` would otherwise report
+    zero usage and never see exhausted retries.
+    """
+    try:
+        out = json.loads(health_output).get("out")
+    except (ValueError, AttributeError):
+        return
+    # Only the OpenAI gateway reports its log; a relative path is relative
+    # to the gateway's working directory, which the runner cannot know.
+    if not isinstance(out, str) or not Path(out).is_absolute():
+        return
+    if Path(out).resolve() != Path(token_log).resolve():
+        raise RuntimeError(
+            f"Gateway writes its token log to {out}, but this run reads {token_log}. "
+            "Start the gateway with --out set to the run's token_log, or give every "
+            "run that shares the gateway the same token_log."
+        )

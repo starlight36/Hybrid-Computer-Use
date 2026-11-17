@@ -96,6 +96,9 @@ func EnforceAXResponseBudget(result ToolCallResult) ToolCallResult {
 	limit := MaxInlineChars()
 	const evidenceReserve = 2048
 	alreadyTruncated := resultContainsInlineTruncation(result)
+	if result.StructuredContent["text_page"] != nil {
+		alreadyTruncated = false
+	}
 	if result.StructuredContent["find_delivery_complete"] == true {
 		// Application text is not truncation evidence for atomic find units.
 		alreadyTruncated = result.StructuredContent["truncation_reason"] == "response_budget"
@@ -157,7 +160,7 @@ func EnforceAXResponseBudget(result ToolCallResult) ToolCallResult {
 		reason = "structural_budget"
 	}
 	treeComplete := !truncated && !structuralBudgetApplied &&
-		coverageIncomplete == 0
+		coverageIncomplete == 0 && result.StructuredContent["text_page"] == nil
 	responseChars := textContentChars(result)
 	if result.StructuredContent != nil {
 		result.StructuredContent["response_chars"] = responseChars
@@ -197,7 +200,7 @@ func providerCoverageSummary(
 			switch reason {
 			case "filtered", "pressure":
 				hasProjection = true
-			case "collapsed_menu", "provider_children_not_rendered":
+			case "collapsed_menu", "provider_children_not_rendered", "modal_dialog":
 				hasExpandable = true
 			case "":
 				hasAcquisitionGap = true

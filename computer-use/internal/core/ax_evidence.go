@@ -84,10 +84,19 @@ func compactAXBatchResult(value any) map[string]any {
 			}
 		}
 	}
+	windows := map[string]bool{}
+	for _, action := range rawActions {
+		if ref, ok := action["window_ref"].(string); ok && ref != "" {
+			windows[ref] = true
+		}
+	}
 	actions := make([]map[string]any, 0, len(rawActions))
 	for _, action := range rawActions {
 		entry := map[string]any{
 			"index": action["action_index"],
+		}
+		if len(windows) > 1 {
+			entry["window_ref"] = action["window_ref"]
 		}
 		actionability, _ := action["actionability"].(map[string]any)
 		if actionability != nil {
@@ -161,6 +170,10 @@ func compactAXModelEvidence(
 ) map[string]any {
 	compact := map[string]any{}
 	mode := strings.TrimSpace(fmt.Sprint(full["ax_mode"]))
+	if page := full["text_page"]; page != nil {
+		compact["text_page"] = page
+		compact["text_read"] = full["text_read"]
+	}
 	if mode == contract.AXModeFind {
 		for _, key := range []string{
 			"find_match_count", "find_page_start", "find_page_count", "next_cursor",
@@ -544,12 +557,13 @@ var axPublicFields = []string{
 
 // axPublicHints are the default corrected calls per error code.
 var axPublicHints = map[string]string{
-	contract.AXCodeStaleRef:       `{"mode":"find","window_ref":"wN","query":{"name_contains":"..."}}`,
-	contract.AXCodeWindowChanged:  `{"mode":"observe","window_ref":"wN"}`,
-	contract.AXCodeWaitTimeout:    `{"mode":"observe","window_ref":"wN"}`,
-	contract.AXCodeEffectUnknown:  `{"mode":"observe","window_ref":"wN"}`,
-	contract.AXCodeAppUnavailable: `{"mode":"apps"}`,
-	contract.AXCodeRuntimeError:   `{"mode":"apps"}`,
+	contract.AXCodeStaleRef:             `{"mode":"find","window_ref":"wN","query":{"name_contains":"..."}}`,
+	contract.AXCodeWindowChanged:        `{"mode":"observe","window_ref":"wN"}`,
+	contract.AXCodeWaitTimeout:          `{"mode":"observe","window_ref":"wN"}`,
+	contract.AXCodeEffectUnknown:        `{"mode":"observe","window_ref":"wN"}`,
+	contract.AXCodeGlobalInputForbidden: `{"mode":"observe","window_ref":"wN"}`,
+	contract.AXCodeAppUnavailable:       `{"mode":"apps"}`,
+	contract.AXCodeRuntimeError:         `{"mode":"apps"}`,
 }
 
 // axPublicErrorCode maps internal failure facts to one public code.
@@ -569,10 +583,24 @@ func axPublicErrorCode(full map[string]any) string {
 		return contract.AXCodeWaitTimeout
 	case failure == "effect_unknown":
 		return contract.AXCodeEffectUnknown
+	case failure == contract.AXCodeGlobalInputForbidden:
+		if axEvidenceReportsInputEmission(full) || full["partial_input_possible"] == true || full["mutation_unknown"] == true {
+			return contract.AXCodeEffectUnknown
+		}
+		if phase == "precondition" {
+			return contract.AXCodeGlobalInputForbidden
+		}
 	case failure == "ax_app_unavailable" || status == "app_unavailable":
 		return contract.AXCodeAppUnavailable
 	case failure == "ax_app_ambiguous":
 		return contract.AXCodeInvalidArgument
+	case failure == "invalid_argument", failure == "unsupported_action", failure == "input_failed":
+		if axEvidenceReportsInputEmission(full) || full["partial_input_possible"] == true || full["mutation_unknown"] == true {
+			return contract.AXCodeEffectUnknown
+		}
+		if phase == "precondition" && failure != "input_failed" {
+			return contract.AXCodeInvalidArgument
+		}
 	case strings.HasPrefix(failure, "stale_"), failure == "unknown_ref",
 		failure == "semantic_target_not_found",
 		failure == "semantic_target_ambiguous",
@@ -589,6 +617,21 @@ func axPublicErrorCode(full map[string]any) string {
 	return contract.AXCodeRuntimeError
 }
 
+func axPublicErrorMessage(full map[string]any, content []ContentItem) string {
+	if message, _ := full[contract.AXPublicErrorDetailKey].(string); message != "" {
+		return firstLine(strings.TrimSpace(message))
+	}
+	for _, item := range content {
+		text := strings.TrimSpace(item.Text)
+		if item.Type != "text" || text == "" || isActReportText(text) ||
+			strings.HasPrefix(text, "title ") || strings.HasPrefix(text, "bound_window: ") {
+			continue
+		}
+		return firstLine(text)
+	}
+	return ""
+}
+
 // axPublicEvidence returns the leading fields of the AX evidence line:
 // ok, the public error code with path, message and hint, and input and
 // progress counts.
@@ -600,20 +643,7 @@ func axPublicEvidence(full map[string]any, isError bool, content []ContentItem) 
 		if path, _ := full[contract.AXPublicErrorPathKey].(string); path != "" {
 			public["path"] = path
 		}
-		message, _ := full[contract.AXPublicErrorDetailKey].(string)
-		if message == "" {
-			for _, item := range content {
-				text := strings.TrimSpace(item.Text)
-				// Window-resolution notes say where input went; they are
-				// not the error.
-				if item.Type != "text" || text == "" || isActReportText(text) ||
-					strings.HasPrefix(text, "title ") || strings.HasPrefix(text, "bound_window: ") {
-					continue
-				}
-				message = text
-				break
-			}
-		}
+		message := axPublicErrorMessage(full, content)
 		coordinateUnverified := full["failure_code"] == "coordinate_target_unverified"
 		if coordinateUnverified {
 			message = "Screen-point ownership could not be verified. Use GUI screenshot to inspect covering windows and the target; refreshing refs alone does not fix ownership. Check completed and current state before sending remaining actions. " + message

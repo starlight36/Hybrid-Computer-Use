@@ -296,6 +296,13 @@ resolves its reference against live canonical state. A reference becomes stale
 when its exact target disappears or is replaced, and batches that would act
 across windows fail before input.
 
+An in-window modal dialog can hide the rest of the accessibility tree. Linux
+marks that observation as scoped, so missing controls do not lose their refs.
+After the dialog closes, a complete observation can retain a semantic ref across
+a provider-object rebuild in the same runtime path and window. The live resolver
+still requires a unique semantic match before input. A moved, renamed, ambiguous
+or removed target does not qualify.
+
 The canonical AX tree stays complete. The model sees a compact working
 projection that drops empty leaves and collapses neutral containers, while
 `find`, selectors, references and actions keep querying canonical records.

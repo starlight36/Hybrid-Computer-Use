@@ -259,6 +259,7 @@ def write_result(run: TaskRun, status: str, **fields) -> dict:
         "agent": args.agent,
         "model": args.model,
         "effort": args.effort,
+        "ablate": list(getattr(args, "ablate", ())),
         "status": status,
         "score": None,
         **fields,

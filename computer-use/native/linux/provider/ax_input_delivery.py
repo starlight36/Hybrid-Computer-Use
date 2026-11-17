@@ -3,6 +3,7 @@
 import math
 import time
 
+from .guard_shadow import guards_enforced
 from .foundation import (
     Atspi,
     OperationFailure,
@@ -19,11 +20,13 @@ from .ax_actions import (
     focus_target_element,
     insert_text_outcome_on_node,
     parse_key,
+    read_all_text,
     resolve_combo_editor,
     scroll_element,
     send_key,
     send_text,
     set_element_value_outcome,
+    text_insertion_point,
 )
 from .gui_input import send_mouse_click
 from .input_primitives import (
@@ -31,6 +34,7 @@ from .input_primitives import (
     window_in_foreground,
 )
 from .actionability import (
+    application_toolkit,
     action_only_sets_state,
     ACTION_REPLY_TIMEOUT,
     do_action_by_index,
@@ -48,12 +52,47 @@ from .ax_target_notes import (
     addressing_channel,
 )
 from .ax_snapshot_diagnostics import is_dropdown_item
+from .ax_records import gtk_combo_partner
+from .ax_select import perform_select, select_item
+from .ax_semantic_scroll import semantic_scroll
+from .ax_dropdown import is_chromium_select
 
 
 A11Y_CHANNEL = "[a11y]"
 KEY_CHANNEL = "[keyboard]"
 SEMANTIC = "[semantic] "
 SYNTHESIS = "[synthesis] "
+
+
+def _require_global_input(action_input):
+    if action_input.get("allow_global_input") is False:
+        raise OperationFailure(
+            "global_input_forbidden: no usable semantic route is available; "
+            "this action requires driver focus or global pointer/keyboard input. "
+            "No input was emitted.",
+            failure_code="global_input_forbidden", failure_phase="precondition",
+            input_events_emitted=False, failure_subject="element")
+
+
+def _selection_click(element, notes, evidence):
+    if node_role(element) not in {"page tab", "list item", "table row", "table cell"}:
+        return False
+    parent = safe(lambda: element.get_parent())
+    if parent is None or safe(lambda: parent.get_selection_iface()) is None:
+        return False
+    try:
+        select_item(element)
+    except OperationFailure as error:
+        if error.input_events_emitted:
+            evidence.update(route="semantic_selection", input_emitted=True,
+                            readback_sampled=True, readback_verified=False)
+        raise
+    evidence.update(route="semantic_selection", input_emitted=True,
+                    readback_sampled=True, readback_verified=True)
+    notes.append(A11Y_CHANNEL + SEMANTIC + "Selected the element through its "
+                 "AT-SPI container and verified selection; no focus or pointer input "
+                 "was sent.")
+    return True
 
 
 def _perform_click(
@@ -117,7 +156,11 @@ def _accessibility_click(
             "click_method 'accessibility' cannot represent click_count > 1; "
             "use click_method 'auto' or 'global' for a real multi-click"
         )
-    if not do_action_by_index(element, preferred_action_index(element)):
+    action_index = preferred_action_index(element)
+    if (action_index is None or node_role(element) == "page tab") and _selection_click(
+            element, notes, action_evidence):
+        return
+    if not do_action_by_index(element, action_index):
         raise RuntimeError(
             "click_method 'accessibility' could not click the requested element"
         )
@@ -141,6 +184,7 @@ def _global_click(
     notes,
     action_evidence,
 ):
+    _require_global_input(action_input)
     element_record, _ = require_stable_coordinate_geometry(
         element, element_record, bounds
     )
@@ -165,7 +209,7 @@ def _global_click(
         addressing_channel(element_record)
         + SYNTHESIS
         + "Synthesized {} coordinate click(s) {} after bringing the window "
-        "to the foreground. {}{}"
+        "to the foreground and moving the real pointer. {}{}"
         .format(
             click_count,
             frame_point_text(x, y),
@@ -199,6 +243,9 @@ def _auto_click(
         and not is_dropdown_item(element, window)
     )
     action_index = preferred_action_index(element) if semantic_click else None
+    if (semantic_click and (action_index is None or node_role(element) == "page tab")
+            and _selection_click(element, notes, action_evidence)):
+        return element_record
     if (
         action_index is not None
         and node_role(element) in {"entry", "text", "password text"}
@@ -211,6 +258,7 @@ def _auto_click(
         # Entry.activate means submit/Enter, not editor focus. In a freshly
         # opened dialog it can leave focus on an outer row, consuming the
         # start of a following untargeted type action outside the editor.
+        _require_global_input(action_input)
         try:
             focus_target_element(
                 window, element, element_record, "editable text click")
@@ -237,6 +285,7 @@ def _auto_click(
     state_only_note = ""
     if semantic_click:
         if action_only_sets_state(element, action_index):
+            _require_global_input(action_input)
             pointer_record, refused = _pointer_click_for_state_only_action(
                 window, bounds, element, element_record, notes,
                 action_evidence)
@@ -250,6 +299,14 @@ def _auto_click(
                 "changes.".format(refused)
             )
         handled = do_action_by_index(element, action_index)
+        if action_index is not None and not handled and action_input.get("allow_global_input") is False:
+            action_evidence.update(route="semantic_action", input_emitted=True,
+                                   readback_verified=False)
+            raise OperationFailure(
+                "The AT-SPI action was attempted but did not confirm delivery. "
+                "No global input was sent. Observe before retrying.",
+                failure_code="effect_unknown", failure_phase="emission",
+                input_events_emitted=True, failure_subject="element")
     if handled:
         action_evidence["route"] = "semantic_action"
         action_evidence["input_emitted"] = True
@@ -283,6 +340,7 @@ def _auto_click(
                 failure_phase="precondition",
                 input_events_emitted=False,
             )
+        _require_global_input(action_input)
         element_record, _ = require_stable_coordinate_geometry(
             element, element_record, bounds
         )
@@ -328,6 +386,7 @@ def _auto_click(
             addressing_channel(element_record)
             + SYNTHESIS
             + reason
+            + "This route brings the window to the foreground and moves the real pointer. "
             + UNVERIFIED_SYNTHESIS
         )
     return element_record
@@ -350,10 +409,13 @@ def _pointer_click_for_state_only_action(
         return None, "the window is not in the foreground"
     evidence_before = dict(action_evidence)
     try:
-        record, _ = require_stable_coordinate_geometry(
-            element, element_record, bounds)
-        x, y = screen_point(bounds, record, None, None)
-        require_coordinate_delivery(window, x, y, "click")
+        # These checks only choose the route: a refusal keeps the semantic
+        # action, so the guard ablation has nothing to let through.
+        with guards_enforced():
+            record, _ = require_stable_coordinate_geometry(
+                element, element_record, bounds)
+            x, y = screen_point(bounds, record, None, None)
+            require_coordinate_delivery(window, x, y, "click")
         hits = point_hits_element(window, element, x, y)
     except (OperationFailure, RuntimeError) as refused:
         action_evidence.clear()
@@ -378,7 +440,7 @@ def _pointer_click_for_state_only_action(
         A11Y_CHANNEL
         + SYNTHESIS
         + "Clicked the element with the pointer {} after checking that "
-        "the window is in front "
+        "the window is in front; this moves the real pointer "
         "and the point is on this element. Its only AT-SPI action is a "
         "toolkit toggle that changes the checked state without the click the "
         "application listens for, so a real click was needed. {}".format(
@@ -398,6 +460,9 @@ def _perform_scroll(
 ):
     direction = action_input.get("direction", "down")
     pages = action_input.get("pages", 1)
+    if semantic_scroll(element, direction, pages, notes, action_evidence):
+        return element_record
+    _require_global_input(action_input)
     point = None
     if action_input.get("window_centre") and bounds is not None:
         point = (
@@ -431,7 +496,7 @@ def _perform_scroll(
             "element you named. Second, one page is APPROXIMATED as {} notches; "
             "the real distance is whatever the application's scroll settings say, "
             "so do not treat pages=1 as exactly one Page_Down. This also moves the "
-            "real pointer. {}".format(
+            "real pointer and brings the window to the foreground. {}".format(
                 int(math.ceil(float(pages or 1))) * WHEEL_CLICKS_PER_PAGE,
                 frame_point_text(*point),
                 # State where the position came from: without a target ref
@@ -484,14 +549,13 @@ def _perform_type(
             semantic_input_emitted,
         ) = insert_text_outcome_on_node(element, action_input.get("text", ""))
     else:
+        element = find_editable_text(window)
         (
             write_outcome,
             before_chars,
             after_chars,
             semantic_input_emitted,
-        ) = insert_text_outcome_on_node(
-            find_editable_text(window), action_input.get("text", "")
-        )
+        ) = insert_text_outcome_on_node(element, action_input.get("text", ""))
     if semantic_input_emitted:
         action_evidence["route"] = "editable_text_api"
         action_evidence["input_emitted"] = True
@@ -534,6 +598,18 @@ def _perform_type(
         if element_record is None:
             require_window_focus(window, "type")
             action_evidence["window_focus_verified"] = True
+            focused = find_editable_text(window)
+            if element is not None and focused != element:
+                raise OperationFailure(
+                    "effect_unknown: the focused text field changed during "
+                    "window activation; no keyboard input was emitted. "
+                    "Observe the current focus before retrying.",
+                    failure_code="effect_unknown",
+                    failure_phase="precondition",
+                    input_events_emitted=semantic_input_emitted,
+                    failure_subject="element",
+                )
+            element = focused
         else:
             # The semantic write attempt may itself move focus. Re-establish
             # and verify the exact target immediately before global synthesis.
@@ -542,11 +618,21 @@ def _perform_type(
                 "targeted type_text keyboard fallback")
             action_evidence["window_focus_verified"] = True
             action_evidence["target_focus_verified"] = True
-        text_route = send_text(action_input.get("text", ""))
+        text_iface = safe(element.get_text_iface) if element is not None else None
+        before_text = read_all_text(text_iface)
+        expected_text = None
+        payload = action_input.get("text", "")
+        if before_text is not None:
+            offset, selection = text_insertion_point(text_iface)
+            end = selection[1] if selection else offset
+            expected_text = before_text[:offset] + payload + before_text[end:]
+        text_route = send_text(payload)
         action_evidence["route"] = "keyboard_synthesis"
         action_evidence["focus_verified"] = True
         action_evidence["editable_verified"] = None
         action_evidence["input_emitted"] = True
+        readback_note = _verify_keyboard_text(
+            text_iface, before_text, expected_text, action_evidence)
         notes.append(
             KEY_CHANNEL
             + SYNTHESIS
@@ -555,10 +641,45 @@ def _perform_type(
                 "verifying the requested element held focus"
                 if element_record is not None
                 else "bringing the window to the foreground",
-                UNVERIFIED_SYNTHESIS,
+                readback_note if action_evidence.get("readback_verified") is True
+                else UNVERIFIED_SYNTHESIS + " " + readback_note,
             )
             + (" " + text_route if text_route else "")
         )
+
+
+def _verify_keyboard_text(text_iface, before_text, expected_text, evidence):
+    if expected_text is None:
+        return (
+            "Typed text effect is unknown: the focused field's text could not "
+            "be read before keyboard input.")
+    deadline = time.monotonic() + 1.0
+    while True:
+        after_text = read_all_text(text_iface)
+        evidence["readback_sampled"] = True
+        evidence["readback_verified"] = (
+            after_text == expected_text if after_text is not None else None)
+        if after_text == expected_text:
+            return (
+                "Read back the focused field after keyboard input and "
+                "confirmed the expected text insertion.")
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.02)
+    if after_text is None:
+        reason = "the focused field's text readback is unavailable"
+    elif after_text == before_text:
+        reason = "the focused field's text is unchanged after keyboard input"
+    else:
+        reason = "the focused field does not contain the expected text insertion"
+    raise OperationFailure(
+        "effect_unknown: " + reason + "; text was not retried. "
+        "Observe the field before sending more input.",
+        failure_code="effect_unknown",
+        failure_phase="readback",
+        input_events_emitted=True,
+        failure_subject="element",
+    )
 
 
 def _perform_keypress(
@@ -592,11 +713,41 @@ def _perform_keypress(
     )
 
 
+def _verify_keyboard_value(element, value, evidence):
+    deadline = time.monotonic() + 1.0
+    while True:
+        after_text = read_all_text(safe(element.get_text_iface))
+        evidence["readback_sampled"] = True
+        evidence["readback_verified"] = (
+            after_text == value if after_text is not None else None)
+        if after_text == value:
+            return
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.02)
+    raise OperationFailure(
+        "effect_unknown: text was typed, but the requested control value "
+        "could not be confirmed. The text may still be in an uncommitted "
+        "editor. Do not retype the value. Inspect the control, complete any "
+        "pending edit through its normal commit action, then read it back.",
+        failure_code="effect_unknown",
+        failure_phase="readback",
+        input_events_emitted=True,
+        failure_subject="element",
+    )
+
+
 def _perform_set_value(
     action_input, window, element, element_record, notes, action_evidence
 ):
     if element is None:
         raise RuntimeError("unknown target ref")
+    if is_chromium_select(element) or (node_role(element) == "combo box"
+            and application_toolkit(element) == "gtk"
+            and gtk_combo_partner(element, "combo box") is None):
+        perform_select({"text": action_input.get("value", "")}, window,
+                       element, element_record, None, notes, action_evidence)
+        return
     element, combo_editor = resolve_combo_editor(element, element_record)
     value = action_input.get("value", "")
     value_outcome = set_element_value_outcome(element, value)
@@ -620,34 +771,26 @@ def _perform_set_value(
                 "fallback was not attempted. Read the control before retrying.",
                 failure_code="effect_unknown", failure_phase="readback",
                 input_events_emitted=True, failure_subject="element")
-        # A refused semantic write does not mean the control is read-only:
-        # Blink text inputs, for example, implement neither the AT-SPI
-        # Value nor the EditableText interface. As click and type_text do,
-        # fall back to synthesis: focus, select all, then type. The note
-        # must state that this path has no read-back confirmation and that
-        # keyboard synthesis is global, so delivery is not guaranteed.
         focus_target_element(
             window, element, element_record,
             "targeted set_value keyboard fallback",
         )
-        send_key("ctrl+a")
-        time.sleep(0.05)
-        text_route = send_text(value)
         action_evidence["route"] = "keyboard_synthesis"
         action_evidence["window_focus_verified"] = True
         action_evidence["target_focus_verified"] = True
         action_evidence["focus_verified"] = True
-        action_evidence["readback_verified"] = False
+        send_key("ctrl+a")
         action_evidence["input_emitted"] = True
+        time.sleep(0.05)
+        text_route = send_text(value)
+        _verify_keyboard_value(element, value, action_evidence)
         notes.append(
             addressing_channel(element_record)
             + SYNTHESIS
-            + "The AT-SPI value API refused this element (Blink and some toolkits "
-            "do not implement it on text inputs), so this fell back to focusing "
-            "the control, selecting all, and typing. There is no read-back "
-            "confirmation on this path, and keyboard synthesis is global — verify "
-            "from the tree that the control now holds what you wanted. {}".format(
-                UNVERIFIED_SYNTHESIS)
+            + "The AT-SPI value API did not confirm a change, so this fell back "
+            "to focusing the control, selecting all, and typing through global "
+            "keyboard synthesis. Exact readback confirmed the requested control "
+            "value. The application may still require OK/Apply."
             + (" " + text_route if text_route else "")
         )
     else:

@@ -123,6 +123,16 @@ var contractCalls = []struct {
 	{"GUI", map[string]any{"actions": []any{map[string]any{"type": "screenshot"}}}},
 	{"Nope", map[string]any{}},
 	{" ax ", map[string]any{"mode": "observe", "observation_target": "apps"}},
+	{"AX", map[string]any{"mode": "activate", "actions": []any{
+		map[string]any{"type": "activate", "title": "Report"},
+	}}},
+	{"AX", map[string]any{"mode": "act", "actions": []any{
+		map[string]any{"type": "click", "ref": "r1"},
+		map[string]any{"type": "settle", "timeout_ms": 1200},
+	}}},
+	{"AX", map[string]any{"mode": "act", "actions": []any{
+		map[string]any{"type": "double_click", "ref": "r1"},
+	}}},
 }
 
 type contractExchange struct {
@@ -228,6 +238,22 @@ func capturePublicContract(t *testing.T) publicContract {
 			Response: roundTripJSON(t, handleMCPRequest(request, svc)),
 		})
 	}
+
+	snapshot := transportOrderedInputTestSnapshot()
+	snapshot.WindowHandle = transportTestHandleReport
+	snapshot.Elements = snapshot.Elements[:1]
+	snapshot.TreeLines = snapshot.TreeLines[:1]
+	contentService := core.NewServiceWithBackend(&transportRecordingPlatformBackend{
+		accessibilityResponse: &core.ProviderAccessibilityResult{OK: true, Snapshot: snapshot},
+	})
+	arguments := map[string]any{"mode": "observe", "app": "Editor", "observe": "tree"}
+	contract.Calls = append(contract.Calls, contractExchange{
+		Request: map[string]any{"tool": "AX", "arguments": arguments},
+		Response: roundTripJSON(t, handleMCPRequest(map[string]any{
+			"jsonrpc": "2.0", "id": float64(100), "method": "tools/call",
+			"params": map[string]any{"name": "AX", "arguments": arguments},
+		}, contentService)),
+	})
 
 	for _, args := range [][]string{
 		{"--help"},

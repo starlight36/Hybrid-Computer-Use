@@ -7,6 +7,141 @@ import json
 from runtime_test_support import *  # noqa: F401,F403
 
 
+class TextReadProtocolTests(AtspiPatchedTestCase):
+    def test_linux_text_read_wire_fixtures(self):
+        fixtures = Path(__file__).resolve().parents[1] / "testdata" / "provider-wire"
+        request = json.loads((fixtures / "text-read.request.json").read_text(encoding="utf-8"))
+        response = json.loads((fixtures / "text-read.response.json").read_text(encoding="utf-8"))
+        runtime.validate_request(request)
+        payload = response["accessibility"]
+        converted = runtime.provider_response(request, {
+            "ok": payload["ok"], "textRead": payload["text_read"],
+        })
+        self.assertEqual(converted["accessibility"], payload)
+        self.assertEqual(payload["text_read"], {
+            "field": "value", "start": 1, "end": 4, "total": 6, "text": "中🙂e",
+        })
+
+    def request(self):
+        return {
+            "protocol": "computer-use-provider", "schema_version": 2,
+            "request_id": "req-text", "operation": "resolve_and_act",
+            "action": {
+                "protocol_version": 2, "intent": "resolve_target", "app": "Editor",
+                "target": {
+                    "selector": 'entry "Document"', "hasName": True,
+                    "role": "entry", "name": "Document",
+                    "providerBusName": ":1.42", "providerObjectPath": "/document",
+                    "processGeneration": "12345",
+                },
+                "observation": {"text_read": {"field": "value", "start": 0, "limit": 4000}},
+            },
+        }
+
+    def test_text_read_requires_resolve_target(self):
+        request = self.request()
+        runtime.validate_request(request)
+        for intent in ("click", "set_value"):
+            request = self.request()
+            request["action"]["intent"] = intent
+            request["action"]["input"] = {} if intent == "click" else {"value": "x"}
+            with self.subTest(intent=intent), self.assertRaises(runtime.ProviderRequestError):
+                runtime.validate_request(request)
+        request = self.request()
+        observation = request.pop("action")["observation"]
+        request["operation"] = "observe"
+        request["observe"] = {"protocol_version": 2, "app": "Editor", "observation": observation}
+        with self.assertRaises(runtime.ProviderRequestError):
+            runtime.validate_request(request)
+
+    def test_range_validation_is_strict(self):
+        invalid = [None, {}, [], {"field": "value", "start": 0},
+                   {"field": "value", "start": 0, "limit": 1, "extra": True}]
+        for field, values in (("field", ("text", None, [], 1)),
+                              ("start", (-1, True, 0.5, "0", None, 2147483648)),
+                              ("limit", (0, 4001, True, 1.5, "1", None))):
+            for value in values:
+                options = {"field": "value", "start": 0, "limit": 4000}
+                options[field] = value
+                invalid.append(options)
+        for options in invalid:
+            request = self.request()
+            request["action"]["observation"]["text_read"] = options
+            with self.subTest(options=options), self.assertRaises(runtime.ProviderRequestError):
+                runtime.validate_request(request)
+        for field in ("name", "value", "description"):
+            request = self.request()
+            request["action"]["observation"]["text_read"] = {"field": field, "start": 1, "limit": 1}
+            runtime.validate_request(request)
+        request["action"]["observation"]["text_read"]["start"] = 2147483647
+        runtime.validate_request(request)
+
+    def test_old_records_accept_only_valid_text_lengths(self):
+        request = self.request()
+        request["action"]["element"] = {"index": 1, "textLengths": {"value": 0, "name": 1234}}
+        runtime.validate_request(request)
+        for lengths in (None, [], {"value": -1}, {"value": True}, {"name": 1.5}, {"extra": 3}):
+            request["action"]["element"]["textLengths"] = lengths
+            with self.subTest(lengths=lengths), self.assertRaises(runtime.ProviderRequestError):
+                runtime.validate_request(request)
+
+    def test_old_records_accept_only_valid_truncated_field_arrays(self):
+        request = self.request()
+        for fields in ([], ["name"], ["name", "value", "description"]):
+            request["action"]["element"] = {"index": 1, "textTruncated": fields}
+            runtime.validate_request(request)
+        for fields in (None, "value", {}, [None], [[]], [False], [1], ["placeholder"]):
+            request["action"]["element"]["textTruncated"] = fields
+            with self.subTest(fields=fields), self.assertRaises(runtime.ProviderRequestError):
+                runtime.validate_request(request)
+
+    def test_wire_read_uses_resolved_node_without_capture_or_input(self):
+        node = _TreeNode(role="entry", name="Document")
+        node._text = FakeTextIface("🙂中 actual value")
+        window = _TreeNode(role="frame", name="Editor")
+        record = {"index": 1, "value": "stale preview", "textLengths": {"value": 9999},
+                  "textTruncated": ["value"], "_private": True}
+        request = self.request()
+        with mock.patch.object(runtime, "resolve_operation_app", return_value=object()), \
+                mock.patch.object(runtime, "main_window", return_value=(0, window)), \
+                mock.patch.object(runtime, "window_bounds", return_value=None), \
+                mock.patch.object(runtime, "resolve_semantic_target", return_value=(node, record, "", window, None)) as resolve, \
+                mock.patch.object(runtime, "build_snapshot") as snapshot, \
+                mock.patch.object(runtime, "capture_window_pixels") as capture, \
+                mock.patch.object(runtime, "_perform_ax_action") as action, \
+                mock.patch.object(runtime, "_execute_desktop_batch") as desktop:
+            response = runtime.execute(request)
+        payload = response["accessibility"]
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["text_read"], {
+            "field": "value", "start": 0, "end": len(node._text.text),
+            "total": len(node._text.text), "text": node._text.text,
+        })
+        self.assertEqual(payload["resolved_element"]["textLengths"], {"value": 9999})
+        self.assertEqual(payload["resolved_element"]["textTruncated"], ["value"])
+        self.assertNotIn("_private", payload["resolved_element"])
+        self.assertEqual(resolve.call_args.args[4], request["action"]["target"])
+        snapshot.assert_not_called()
+        capture.assert_not_called()
+        action.assert_not_called()
+        desktop.assert_not_called()
+
+    def test_failed_read_has_explicit_failure_without_text_or_recovery(self):
+        node = _TreeNode(role="entry", name="Document")
+        window = _TreeNode(role="frame", name="Editor")
+        with mock.patch.object(runtime, "resolve_operation_app", return_value=object()), \
+                mock.patch.object(runtime, "main_window", return_value=(0, window)), \
+                mock.patch.object(runtime, "window_bounds", return_value=None), \
+                mock.patch.object(runtime, "resolve_semantic_target", return_value=(node, {"index": 1}, "", window, None)), \
+                mock.patch.object(runtime, "bounded_recovery_context") as recovery:
+            response = runtime.execute(self.request())
+        self.assertFalse(response["accessibility"]["ok"])
+        self.assertEqual(response["accessibility"]["failure"]["code"], "runtime_error")
+        self.assertNotIn("text_read", response["accessibility"])
+        self.assertNotIn("mutation", response["accessibility"])
+        recovery.assert_not_called()
+
+
 class RuntimeActionEvidenceFailureTests(unittest.TestCase):
     def test_text_delivery_wire_keeps_null_and_zero_without_confirming_effect(self):
         for name, source_count, unknown_index in (

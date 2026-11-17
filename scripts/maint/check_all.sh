@@ -3,8 +3,9 @@
 #
 # Usage: scripts/maint/check_all.sh [BASELINE_BINARY]
 #
-# With BASELINE_BINARY, the script also builds the current tree and compares
-# MCP initialize/tools/list, help and schema bytes with that binary.
+# With BASELINE_BINARY, the script also builds the current tree, compares
+# MCP initialize/tools/list, help and schema bytes with that binary, and
+# checks the model-visible text of every COMPUTER_USE_ABLATE setting.
 # Logs go to $LOG_DIR (default /tmp/hcu-maint-check); each step prints one
 # summary line, and the log tail on failure. The script exits non-zero at the
 # first failing step.
@@ -63,4 +64,5 @@ if [ -n "$baseline_binary" ]; then
 	(cd "$repo/computer-use" && CGO_ENABLED=0 go build -trimpath \
 		-ldflags "-X main.version=$(cat "$repo/VERSION")" -o "$candidate" ./cmd/computer-use)
 	step mcp-bytes python3 "$repo/scripts/maint/compare_mcp_bytes.py" "$baseline_binary" "$candidate"
+	step ablation-text python3 "$repo/scripts/maint/check_ablation_text.py" "$candidate"
 fi

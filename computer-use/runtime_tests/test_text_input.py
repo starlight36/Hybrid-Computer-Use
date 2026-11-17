@@ -54,7 +54,7 @@ class FindEditableTextTests(AtspiPatchedTestCase):
 
         self.assertIsNone(runtime.find_editable_text(window))
 
-    def test_ignores_nodes_without_editable_text_iface(self):
+    def test_finds_focused_editor_without_editable_text_iface_for_readback(self):
         read_only = FakeNode(
             states=(STATE.EDITABLE, STATE.FOCUSED),
             text=FakeTextIface(),
@@ -64,7 +64,7 @@ class FindEditableTextTests(AtspiPatchedTestCase):
             states=(STATE.EDITABLE, STATE.SHOWING), text=FakeTextIface())
         window = FakeNode(children=(read_only, editor))
 
-        self.assertIsNone(runtime.find_editable_text(window))
+        self.assertIs(runtime.find_editable_text(window), read_only)
 
     def test_unique_showing_editor_is_not_treated_as_focused(self):
         editor = FakeNode(
@@ -82,6 +82,127 @@ class FindEditableTextTests(AtspiPatchedTestCase):
         )
 
         self.assertIs(runtime.find_editable_text(window), editor)
+
+
+class TypeReadbackTests(AtspiPatchedTestCase):
+    def setUp(self):
+        super().setUp()
+        self.iface = FakeTextIface("prefix", honest=False, caret=6)
+        self.editor = FakeNode(
+            states=(STATE.EDITABLE, STATE.FOCUSED), text=self.iface)
+        self.window = FakeNode(children=(self.editor,))
+        self.evidence = {}
+        self.notes = []
+        self.now = 0.0
+        self.focus = mock.patch.object(runtime, "require_window_focus").start()
+        self.send = mock.patch.object(runtime, "send_text", return_value=None).start()
+        mock.patch.object(runtime.time, "monotonic", side_effect=lambda: self.now).start()
+        mock.patch.object(runtime.time, "sleep", side_effect=self.advance).start()
+        self.addCleanup(mock.patch.stopall)
+
+    def advance(self, seconds):
+        self.now += seconds
+
+    def invoke(self, text="payload"):
+        runtime._perform_type(
+            {"text": text}, self.window, None, None, self.notes, self.evidence)
+
+    def test_ignored_keyboard_input_reports_unchanged_after_bounded_readback(self):
+        with self.assertRaises(runtime.OperationFailure) as raised:
+            self.invoke()
+        self.assertEqual(raised.exception.failure_code, "effect_unknown")
+        self.assertEqual(raised.exception.failure_phase, "readback")
+        self.assertTrue(raised.exception.input_events_emitted)
+        self.assertIn("unchanged", str(raised.exception))
+        self.assertTrue(self.evidence["readback_sampled"])
+        self.assertFalse(self.evidence["readback_verified"])
+        self.send.assert_called_once_with("payload")
+
+    def test_delayed_keyboard_input_is_read_back_without_retyping(self):
+        def delayed(seconds):
+            self.advance(seconds)
+            if self.now >= 0.04:
+                self.iface.text = "prefixpayload"
+        with mock.patch.object(runtime.time, "sleep", side_effect=delayed):
+            self.invoke()
+        self.assertTrue(self.evidence["readback_verified"])
+        self.send.assert_called_once_with("payload")
+
+    def test_wrong_same_length_keyboard_result_is_unknown(self):
+        self.send.side_effect = lambda _text: setattr(self.iface, "text", "prefixinvalid")
+        with self.assertRaises(runtime.OperationFailure) as raised:
+            self.invoke()
+        self.assertIn("expected text", str(raised.exception))
+        self.assertFalse(self.evidence["readback_verified"])
+        self.send.assert_called_once()
+
+    def test_unreadable_keyboard_result_is_unknown(self):
+        self.send.side_effect = lambda _text: setattr(self.iface, "text", None)
+        with self.assertRaises(runtime.OperationFailure) as raised:
+            self.invoke()
+        self.assertIn("unavailable", str(raised.exception))
+        self.assertIsNone(self.evidence["readback_verified"])
+        self.send.assert_called_once()
+
+    def test_focus_change_during_window_activation_stops_keyboard_input(self):
+        other = FakeNode(states=(STATE.FOCUSED, STATE.EDITABLE), text=FakeTextIface())
+        self.focus.side_effect = lambda *_: setattr(self.window, "children", [other])
+        with self.assertRaises(runtime.OperationFailure) as raised:
+            self.invoke()
+        self.assertIn("focus", str(raised.exception))
+        self.assertTrue(raised.exception.input_events_emitted)
+        self.send.assert_not_called()
+        self.assertEqual(other._text.text, "")
+
+    def test_editor_without_editable_api_gets_keyboard_readback(self):
+        self.editor._editable = False
+        self.send.side_effect = lambda _text: setattr(self.iface, "text", "prefixpayload")
+        self.invoke()
+        self.assertTrue(self.evidence["readback_verified"])
+        self.send.assert_called_once()
+
+    def test_semantic_typing_preserves_background_focus(self):
+        self.iface.honest = True
+        self.invoke()
+        self.assertEqual(self.iface.text, "prefixpayload")
+        self.focus.assert_not_called()
+        self.send.assert_not_called()
+        self.assertTrue(self.evidence["readback_verified"])
+
+    def test_keyboard_readback_checks_selection_replacement(self):
+        self.editor._editable = False
+        self.iface.selection = (1, 4)
+        self.send.side_effect = lambda _text: setattr(self.iface, "text", "ppayloadix")
+        self.invoke()
+        self.assertTrue(self.evidence["readback_verified"])
+
+    def test_keyboard_readback_checks_insertion_at_caret(self):
+        self.editor._editable = False
+        self.iface.caret = 2
+        self.send.side_effect = lambda _text: setattr(self.iface, "text", "prpayloadefix")
+        self.invoke()
+        self.assertTrue(self.evidence["readback_verified"])
+
+    def test_no_readable_focus_reports_unknown_instead_of_claiming_delivery(self):
+        self.window.children = []
+        self.invoke()
+        self.assertIn("effect is unknown", " ".join(self.notes))
+        self.assertIsNot(self.evidence.get("readback_verified"), True)
+        self.send.assert_called_once()
+
+    def test_activation_focus_change_without_semantic_input_preserves_no_input(self):
+        self.editor._editable = False
+        self.focus.side_effect = lambda *_: setattr(self.window, "children", [])
+        with self.assertRaises(runtime.OperationFailure) as raised:
+            self.invoke()
+        self.assertFalse(raised.exception.input_events_emitted)
+        self.send.assert_not_called()
+
+    def test_multiple_focused_editors_do_not_pick_the_one_with_editable_api(self):
+        other = FakeNode(
+            states=(STATE.FOCUSED, STATE.EDITABLE), text=FakeTextIface(), editable=False)
+        self.window.children.append(other)
+        self.assertIsNone(runtime.find_editable_text(self.window))
 
 
 def _write_into_window(window, text):

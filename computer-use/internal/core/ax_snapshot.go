@@ -61,10 +61,12 @@ type AXCapabilities struct {
 }
 
 type AXProperties struct {
-	Value       string `json:"value,omitempty"`
-	Description string `json:"description,omitempty"`
-	Placeholder string `json:"placeholder,omitempty"`
-	Omitted     string `json:"omitted,omitempty"`
+	TextTruncated []string       `json:"textTruncated,omitempty"`
+	TextLengths   map[string]int `json:"textLengths,omitempty"`
+	Value         string         `json:"value,omitempty"`
+	Description   string         `json:"description,omitempty"`
+	Placeholder   string         `json:"placeholder,omitempty"`
+	Omitted       string         `json:"omitted,omitempty"`
 }
 
 type AXProviderIdentity struct {

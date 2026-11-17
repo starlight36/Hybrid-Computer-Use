@@ -7,6 +7,53 @@ import (
 	"github.com/microsoft/Hybrid-Computer-Use/computer-use/internal/contract"
 )
 
+func TestObserveShowsTextInterfaceOnlyParagraph(t *testing.T) {
+	snapshot := cellValueSnapshot()
+	snapshot.Elements[2].ControlType = "paragraph"
+	snapshot.Elements[2].Name = ""
+	snapshot.Elements[2].Value = "The paragraph body comes from Text, not the accessible name."
+	text := typedTreeTextForTest(t, snapshot)
+	if !strings.Contains(text, snapshot.Elements[2].Value) {
+		t.Fatalf("Text-only body missing: %s", text)
+	}
+}
+
+func TestClippedCellTextReportsLengthAndReadRoute(t *testing.T) {
+	snapshot := cellValueSnapshot()
+	text := typedTreeTextForTest(t, snapshot)
+	for _, want := range []string{"/text-truncated:", "value length=", "read_text"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q: %s", want, text)
+		}
+	}
+	if strings.Contains(text, snapshot.Elements[3].Value) {
+		t.Fatal("the ordinary tree must not include the full long value")
+	}
+}
+
+func TestFindDoesNotRepeatTruncationForIdenticalNameAndValue(t *testing.T) {
+	snapshot := cellValueSnapshot()
+	record := &snapshot.Elements[2]
+	record.ControlType = "label"
+	record.Name = strings.Repeat("x", 500) + "..."
+	record.Value = record.Name
+	record.TextLengths = map[string]int{"name": 501, "value": 501}
+	record.TextTruncated = []string{"name", "value"}
+	typed, err := buildAXSnapshot(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := FindMatchUnit(typed, *record, 1)
+	if strings.Count(text, "/text-truncated:") != 1 || !strings.Contains(text, "name length=501") {
+		t.Fatalf("find duplicated the truncation hint after shortening the name: %s", text)
+	}
+	for _, property := range renderAXProperties(findDisplayNode(typed.ByIndex[record.Index]), AXRenderOptions{}) {
+		if property[0] == "/text" || property[0] == "/value" {
+			t.Fatalf("find context duplicated a value that equals the canonical name: %v", property)
+		}
+	}
+}
+
 func TestStructuredAXYAMLSupportsValueAndChildren(t *testing.T) {
 	root := &AXNode{
 		ID:   "0",

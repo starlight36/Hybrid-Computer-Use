@@ -30,6 +30,7 @@ from .gui_capture import (
 )
 from . import action_evidence
 from .input_primitives import require_window_focus
+from .guard_shadow import shadow_guard
 
 from .element_resolver import (
     same_frame,
@@ -277,6 +278,10 @@ def require_stable_coordinate_geometry(element, element_record, window_bounds):
             input_events_emitted=False,
             failure_subject="element",
         )
+    if not settled and shadow_guard(
+        "ax", "target_geometry", "target_unstable", samples=samples,
+    ):
+        settled = True
     if not settled:
         action_evidence.update(geometry_stable=False)
         raise OperationFailure(
@@ -399,6 +404,10 @@ def require_coordinate_delivery(window, x, y, what):
         return
     action_evidence.update(point_owner_verified=owner)
     reason = "unknown" if owner is None else "different_window"
+    if shadow_guard(
+        "ax", "point_owner", reason, x=x, y=y, action=what,
+    ):
+        return
     raise OperationFailure(
         "coordinate_target_unverified: point owner is {}; no input was "
         "emitted.".format(reason),

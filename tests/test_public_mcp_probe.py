@@ -14,6 +14,12 @@ from hcu.osworld.runtime import public_mcp_probe_config, public_mcp_probe_script
 SERVER = r'''
 import json, os, sys
 scenario = os.environ.get("PROBE_SCENARIO", "ok")
+ablated = [n for n in os.environ.get("COMPUTER_USE_ABLATE", "").split(",") if n]
+# The "ablated" server applies the switches and refuses unknown ones; the
+# "stale" server ignores them, as a build without the switches does.
+if scenario == "ablated" and any(n not in ("batching", "wait", "diff", "guard") for n in ablated):
+    sys.exit("unknown COMPUTER_USE_ABLATE")
+REFUSED = {"wait": "actions[0].type", "batching": "actions[1]", "diff": "observe"}
 for line in sys.stdin:
     req = json.loads(line)
     if "id" not in req:
@@ -24,7 +30,16 @@ for line in sys.stdin:
     elif method == "tools/list":
         result = {"tools": [{"name": x} for x in json.loads(sys.argv[1])]}
     else:
-        mode = params.get("arguments", {}).get("mode", "screenshot")
+        arguments = params.get("arguments", {})
+        mode = arguments.get("mode", "screenshot")
+        uses = ("wait" if "wait" in json.dumps(arguments) else
+                "batching" if len(arguments.get("actions", [])) > 1 else
+                "diff" if arguments.get("observe") == "diff" else None)
+        if uses and scenario == "ablated" and uses in ablated:
+            evidence = {"ok": False, "code": "invalid_argument", "path": REFUSED[uses]}
+            print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": {
+                "isError": True, "content": [{"type": "text", "text": json.dumps(evidence)}]}}), flush=True)
+            continue
         if mode == "apps":
             text = 'w1 "Fixture" app=fixture active\n'
             if scenario == "empty":
@@ -55,14 +70,17 @@ for line in sys.stdin:
 '''
 
 
-def probe(tmp_path, scenario="ok", names=None):
+def probe(tmp_path, scenario="ok", names=None, ablate=""):
     names = ["AX", "GUI"] if names is None else names
     server = tmp_path / "server.py"
     server.write_text(SERVER)
+    env = {"PROBE_SCENARIO": scenario}
+    if ablate:
+        env["COMPUTER_USE_ABLATE"] = ablate
     config = {
         "command": sys.executable,
         "args": [str(server), json.dumps(names)],
-        "env": {"PROBE_SCENARIO": scenario},
+        "env": env,
         "expected_tools": names,
         "protocol": "2026-07-28",
     }
@@ -94,6 +112,17 @@ def test_probe_rejects_errors_or_missing_evidence(tmp_path, scenario):
     result = probe(tmp_path, scenario)
     assert result.returncode != 0
     assert "RuntimeError" in result.stderr
+
+
+@pytest.mark.parametrize("ablate", ["guard", "wait", "batching,wait,diff,guard"])
+def test_probe_confirms_the_server_applies_the_ablation(tmp_path, ablate):
+    result = probe(tmp_path, "ablated", ablate=ablate)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["checks"]["ablation"] == "passed: " + ablate
+    # A build without the switches runs full HCU; the probe must stop it.
+    stale = probe(tmp_path, "stale", ablate=ablate)
+    assert stale.returncode != 0
+    assert "ignores the" in stale.stderr or "unknown COMPUTER_USE_ABLATE" in stale.stderr
 
 
 def test_empty_desktop_does_not_require_creating_a_task_window(tmp_path):

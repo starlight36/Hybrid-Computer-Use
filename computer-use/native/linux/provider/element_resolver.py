@@ -7,24 +7,31 @@ from .foundation import (
     DEFAULT_TEXT_LIMIT,
     OperationFailure,
     child_at,
+    node_name,
     node_role,
     safe,
+    state_value,
 )
 from .node_geometry import extents
 from .primitives import name_fingerprint
+from .guard_shadow import guards_shadowed, shadow_guard
 
 from .ax_node_properties import (
     accessible_id,
     parse_text_limit,
 )
 from .ax_records import (
+    combo_edit_identity,
+    combo_edit_target,
     effective_name,
     effective_role,
+    gtk_combo_partner,
 )
 
 from .x11_windows import (
     main_window,
     relative_frame,
+    window_bounds,
 )
 from .primitives import semantic_text_key
 from .semantic_window_candidates import (
@@ -132,6 +139,7 @@ def find_element_at_snapshot_path_with_bounds(app, record, window_bounds):
     paths = [record.get("runtimeId") or []]
     paths.extend(record.get("runtimeAliases") or [])
     seen_paths = set()
+    mismatched = None
     for path in paths:
         path_key = tuple(path)
         if path_key in seen_paths:
@@ -142,6 +150,8 @@ def find_element_at_snapshot_path_with_bounds(app, record, window_bounds):
             node, record, window_bounds
         ):
             return node
+        if node is not None and mismatched is None:
+            mismatched = (node, path)
     # Self-managed tables expose visible cells through Table.get_accessible_at
     # instead of child enumeration. render_visible_cells gives those records a
     # stable virtual suffix [row, col], so the action resolver must understand
@@ -170,6 +180,13 @@ def find_element_at_snapshot_path_with_bounds(app, record, window_bounds):
                 and record_still_matches(node, record, window_bounds)
             ):
                 return node
+    if mismatched is not None and shadow_guard(
+        "ax", "target_identity", "path_resolves_to_a_different_element",
+        path=list(mismatched[1]),
+        expected={"role": record.get("controlType"), "name": record.get("name")},
+        live={"role": effective_role(mismatched[0]), "name": effective_name(mismatched[0])},
+    ):
+        return mismatched[0]
     return None
 
 
@@ -528,3 +545,61 @@ def _semantic_resolution_note(
         ),
     )
     return note
+
+
+# Identity refusals of a semantic target. The guard ablation acts on the
+# snapshot path instead when a node is still there.
+_SHADOWED_TARGET_FAILURES = {
+    "stale_element_ref", "semantic_target_not_found", "semantic_target_ambiguous",
+}
+
+
+def shadow_semantic_refusal(app, window_index, window, bounds, target, refused):
+    """Return (node, record, window, bounds) at the target's snapshot path.
+
+    The window and bounds are those of the top-level window that holds the
+    node, as a resolved target has. None keeps the refusal: the guard
+    ablation is off, the refusal is not an identity check, or no live node is
+    left on the path.
+    """
+    # The full arm must not pay for the AT-SPI reads below.
+    if not guards_shadowed():
+        return None
+    if getattr(refused, "failure_code", None) not in _SHADOWED_TARGET_FAILURES:
+        return None
+    paths = [target.get("runtimeId") or []]
+    paths.extend(target.get("runtimeAliases") or [])
+    for path in paths:
+        if not path:
+            continue
+        node = resolve_path(app, path)
+        if node is None or state_value(node, Atspi.StateType.DEFUNCT) is True:
+            continue
+        role = node_role(node)
+        if not shadow_guard(
+            "ax", "target_identity", refused.failure_code,
+            message=str(refused), selector=target.get("selector"), path=list(path),
+            live={"role": role, "name": node_name(node)},
+        ):
+            return None
+        node_window, node_bounds = window, bounds
+        if path[0] != window_index:
+            top = safe(lambda: app.get_child_at_index(path[0]))
+            if top is not None:
+                node_window = top
+                node_bounds = window_bounds(app, path[0], top)
+        record = {
+            "runtimeId": list(path),
+            "controlType": role,
+            "name": node_name(node),
+            "frame": safe(lambda: relative_frame(node, node_bounds)),
+        }
+        # A projected combo edits through its partner, as a scanned record
+        # says (ax_records.py).
+        if role == "combo box" or gtk_combo_partner(node, role) is not None:
+            record["controlType"] = "combo box"
+            identity = combo_edit_identity(combo_edit_target(node))
+            if identity is not None:
+                record["editTarget"] = identity
+        return node, record, node_window, node_bounds
+    return None

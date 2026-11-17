@@ -261,8 +261,10 @@ func (s *Service) getAppStateResult(
 		providerCoverageSummary(snapshot.Annotations).AcquisitionIncomplete == 0
 	// A stable provider snapshot can receive new public refs after invalidation.
 	// Only reuse the model's tree when its delivered lines still match.
+	// The diff ablation always returns the tree.
 	previousDelivery := s.deliveredSnapshotFor(snapshot)
 	if acquisitionComplete && !forceFull && previousDelivery != nil &&
+		!contract.Ablated(contract.AblateDiff) &&
 		slices.Equal(previousDelivery.TreeLines, snapshot.TreeLines) &&
 		((snapshot.identicalToPrevious && delivered) ||
 			s.deliveredStateMatches(snapshot)) {

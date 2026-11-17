@@ -7,19 +7,48 @@ import (
 	"strings"
 )
 
+func axBatchFailureHint(context *AXBatchContext, evidence map[string]any) string {
+	if hint, _ := evidence[contract.AXPublicErrorHintKey].(string); hint != "" {
+		return ""
+	}
+	if evidence["focus_preparation"] != nil || evidence["pointer_preparation"] != nil {
+		return ""
+	}
+	switch evidence["failure_code"] {
+	case "unsupported_action":
+		return GUIScreenshotCall
+	case "invalid_argument", "input_failed":
+		if context != nil && isShortAXWindowRef(context.WindowRef) {
+			return contract.CompactJSON(map[string]any{"mode": contract.AXModeObserve, "window_ref": context.WindowRef})
+		}
+		return GUIScreenshotCall
+	}
+	return ""
+}
+
 func prependAXBatchSummary(
 	result ToolCallResult,
 	summary string,
 	facts map[string]any,
 ) ToolCallResult {
+	if result.StructuredContent == nil {
+		result.StructuredContent = map[string]any{}
+	}
+	if result.IsError {
+		result.StructuredContent[contract.AXPublicErrorDetailKey] =
+			axPublicErrorMessage(result.StructuredContent, result.Content)
+		if axPublicErrorCode(result.StructuredContent) == contract.AXCodeInvalidArgument &&
+			result.StructuredContent[contract.AXPublicErrorPathKey] == nil {
+			if index, ok := IntEvidence(facts["failed_action_index"]); ok {
+				result.StructuredContent[contract.AXPublicErrorPathKey] = fmt.Sprintf("actions[%d]", index)
+			}
+		}
+	}
 	if strings.TrimSpace(summary) != "" {
 		result.Content = append(
 			[]ContentItem{{Type: "text", Text: summary}},
 			result.Content...,
 		)
-	}
-	if result.StructuredContent == nil {
-		result.StructuredContent = map[string]any{}
 	}
 	result.StructuredContent["a11y_batch_result"] = facts
 	if actions, ok := facts["actions"].([]map[string]any); ok {
@@ -54,7 +83,8 @@ func compactAXActionContent(result ToolCallResult) ToolCallResult {
 		kept := make([]string, 0, len(lines))
 		for _, line := range lines {
 			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "Note:") {
+			if strings.HasPrefix(trimmed, "Note:") &&
+				!strings.HasPrefix(strings.TrimSpace(strings.TrimPrefix(trimmed, "Note:")), "[a11y][synthesis]") {
 				drop := false
 				for _, marker := range routine {
 					if strings.Contains(trimmed, marker) {

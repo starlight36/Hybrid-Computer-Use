@@ -98,6 +98,17 @@ func (s *Service) callProviderAction(
 	request ProviderActionRequest,
 ) (*ProviderAccessibilityResult, error) {
 	defer s.countProviderTime(time.Now())
+	if s.platformBackend().HostInfo().Platform != "linux" &&
+		((request.Click != nil && request.Click.AllowGlobalInput != nil) ||
+			(request.Scroll != nil && request.Scroll.AllowGlobalInput != nil)) {
+		result := &ProviderAccessibilityResult{
+			Error:    "allow_global_input is supported only for Linux AX click and scroll",
+			Failure:  &ProviderFailure{Code: "invalid_argument", Phase: "precondition", FactsComplete: true},
+			Mutation: &ProviderMutationFacts{},
+		}
+		result.PrepareForService()
+		return result, nil
+	}
 	result, err := s.platformBackend().ResolveAndAct(request)
 	result.PrepareForService()
 	return &result, err

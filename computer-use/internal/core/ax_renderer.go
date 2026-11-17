@@ -166,7 +166,7 @@ func axInlineCellValue(node *AXNode) (string, bool) {
 		return "", false
 	}
 	value := strings.TrimSpace(strings.ToValidUTF8(node.Properties.Value, "\uFFFD"))
-	if comparableTreeText(value) == "" || semanticTextEqual(value, node.Name) ||
+	if comparableTreeText(value) == "" || axValueRepeatsName(node) ||
 		pureNonSemanticUnicode(value, node) {
 		return "", false
 	}
@@ -175,9 +175,21 @@ func axInlineCellValue(node *AXNode) (string, bool) {
 
 func renderAXProperties(node *AXNode, options AXRenderOptions) [][2]string {
 	properties := make([][2]string, 0, 8)
+	valuePreview := node.Properties.Value
+	if !roleExposesWorkingValue(node.Role) {
+		if node.Role == "cell" || node.Role == "gridcell" {
+			valuePreview, _ = axInlineCellValue(node)
+		} else {
+			valuePreview, _ = shortenAtWord(valuePreview, maxFindTextRunes)
+			if valuePreview != "" && !axValueRepeatsName(node) &&
+				!pureNonSemanticUnicode(node.Properties.Value, node) {
+				properties = append(properties, [2]string{"/text", valuePreview})
+			}
+		}
+	}
 	if node.Properties.Value != "" &&
 		(roleExposesWorkingValue(node.Role) &&
-			!semanticTextEqual(node.Properties.Value, node.Name) &&
+			!axValueRepeatsName(node) &&
 			!pureNonSemanticUnicode(node.Properties.Value, node)) {
 		properties = append(properties, [2]string{"/value", node.Properties.Value})
 	}
@@ -189,6 +201,22 @@ func renderAXProperties(node *AXNode, options AXRenderOptions) [][2]string {
 		(!semanticTextEqual(node.Properties.Description, node.Name) &&
 			!semanticTextEqual(node.Properties.Description, node.Properties.Value)) {
 		properties = append(properties, [2]string{"/description", node.Properties.Description})
+	}
+	for _, field := range []struct{ name, preview string }{
+		{"name", node.Name}, {"value", valuePreview}, {"description", node.Properties.Description},
+	} {
+		if field.name == "value" && axValueRepeatsName(node) {
+			continue
+		}
+		total := node.Properties.TextLengths[field.name]
+		if field.preview == "" || !axTextPreviewTruncated(node, field.name, field.preview) {
+			continue
+		}
+		hint := "use find to obtain a ref, then observe with root and read_text.field=" + field.name
+		if node.Ref != "" {
+			hint = contract.CompactJSON(axTextReadCall("", node.Ref, field.name, 0, contract.AXMaxReadText))
+		}
+		properties = append(properties, [2]string{"/text-truncated", fmt.Sprintf("… %s length=%d codepoints; Linux: %s", field.name, total, hint)})
 	}
 	if node.Capabilities.SetValue {
 		properties = append(properties, [2]string{"/set-value", "true"})
@@ -219,6 +247,14 @@ func renderAXProperties(node *AXNode, options AXRenderOptions) [][2]string {
 func semanticTextEqual(left, right string) bool {
 	return comparableTreeText(left) != "" &&
 		comparableTreeText(left) == comparableTreeText(right)
+}
+
+func axValueRepeatsName(node *AXNode) bool {
+	if semanticTextEqual(node.Properties.Value, node.Name) {
+		return true
+	}
+	record := node.SourceRecord
+	return record != nil && semanticTextEqual(record.Value, record.Name)
 }
 
 func pureNonSemanticUnicode(value string, node *AXNode) bool {

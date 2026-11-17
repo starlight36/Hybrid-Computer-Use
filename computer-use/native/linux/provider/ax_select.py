@@ -557,7 +557,8 @@ def perform_select(action_input, window, element, element_record, to_element,
             text if text is not None else option_name(element), window)
         summary = "selected option {}".format(_quote(chosen))
         emitted = bool(action_evidence.get("input_emitted"))
-        action_evidence["route"] = "semantic_action"
+        if action_evidence.get("route") != "selection_api":
+            action_evidence["route"] = "semantic_action"
     elif text is not None or _text_iface(element) is not None and role not in (
             "list item", "table cell", "cell", "tree item", "icon"):
         content, owners = _selection_text_owners(

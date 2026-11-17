@@ -15,8 +15,8 @@ import (
 //	effect: r58 checkbox "Interface" checked=false→true
 //	windows: opened w5 "Insert Sheet" (dialog, focused); closed w3 "Print"; focus w2
 //
-// One effect line per action that named an element ref, compared between
-// the read before that action and the next read after it. The windows line
+// One effect line per type or action that named an element ref, compared
+// between the reads around that action. The windows line
 // compares the application's top-level windows before the first action with
 // those after the last one. Both come from reads the batch makes anyway; the
 // report adds no provider call.
@@ -34,8 +34,10 @@ type actReportTrace struct {
 	observe     string
 	// start is the snapshot before any input; before[i] the snapshot just
 	// before action i ran.
-	start  *AppSnapshot
-	before map[int]*AppSnapshot
+	start       *AppSnapshot
+	before      map[int]*AppSnapshot
+	afterAction map[int]*AppSnapshot
+	stepWindows map[int]string
 }
 
 func newActReportTrace(obs observation) *actReportTrace {
@@ -61,9 +63,29 @@ func (t *actReportTrace) recordBefore(s *Service, index int) {
 	t.before[index] = s.currentSnapshot(t.appToken)
 }
 
+func (t *actReportTrace) recordWindow(index int, ref string) {
+	if t.stepWindows == nil {
+		t.stepWindows = map[int]string{}
+	}
+	t.stepWindows[index] = ref
+}
+
+func (t *actReportTrace) recordAfter(s *Service, index int) {
+	if t.afterAction == nil {
+		t.afterAction = map[int]*AppSnapshot{}
+	}
+	t.afterAction[index] = s.currentSnapshot(t.appToken)
+}
+
 // after returns the first snapshot read after action index, or nil when no
 // read happened after it.
 func (t *actReportTrace) after(s *Service, index int) *AppSnapshot {
+	if after, present := t.afterAction[index]; present {
+		if after == t.before[index] {
+			return nil
+		}
+		return after
+	}
 	next := -1
 	for candidate := range t.before {
 		if candidate > index && (next < 0 || candidate < next) {
@@ -81,7 +103,9 @@ func (t *actReportTrace) after(s *Service, index int) *AppSnapshot {
 }
 
 // withActReport puts the report first in an act result. A call rejected
-// before any input gets no report: nothing happened.
+// before any input gets no report: nothing happened. Under the diff
+// ablation the report still decides target_effect_observed but is not
+// shown.
 func (s *Service) withActReport(
 	result ToolCallResult,
 	actions []axBatchAction,
@@ -98,25 +122,38 @@ func (s *Service) withActReport(
 		}
 	}
 	lines := []string{}
-	// The effect counts as observed only when every action named an element
-	// and each of those elements visibly changed; a keypress or a no-change
-	// action keeps the call's uncertainty.
+	// The effect counts as observed only when every action has its own
+	// evidence: a value change for type, a target change for other actions.
 	verified := completed == len(actions)
 	for index, action := range actions {
 		if action.actionType == "wait" {
 			continue
 		}
-		if !isShortAXRef(action.targetRef) {
+		if action.actionType != "type" && !isShortAXRef(action.targetRef) {
 			verified = false
-			continue
-		}
-		if _, ran := trace.before[index]; !ran {
 			continue
 		}
 		if index > completed {
 			break
 		}
-		line, changed := s.actEffectLine(trace, index, action.targetRef)
+		if _, ran := trace.before[index]; !ran && (action.actionType != "type" || index >= completed) {
+			continue
+		}
+		var line string
+		var changed bool
+		if action.actionType == "type" {
+			switch {
+			case index > 0 && actions[index-1].actionType != "wait" &&
+				trace.before[index] != nil && trace.before[index] == trace.before[index-1]:
+				line = axReportEffectPrefix + "type unknown (no separate read before the action)"
+			case trace.before[index] != nil && index+1 < completed && trace.before[index+1] == nil:
+				line = axReportEffectPrefix + "type unknown (no separate read after the action)"
+			default:
+				line, changed = s.actTypeEffectLine(trace, index, action.targetRef)
+			}
+		} else {
+			line, changed = s.actEffectLine(trace, index, action.targetRef)
+		}
 		lines = append(lines, line)
 		verified = verified && changed
 	}
@@ -124,11 +161,111 @@ func (s *Service) withActReport(
 	if verified && len(lines) > 1 {
 		result.StructuredContent["target_effect_observed"] = true
 	}
+	if contract.Ablated(contract.AblateDiff) {
+		// The diff ablation keeps the evidence the report decides, but
+		// not the report.
+		return result
+	}
 	result.Content = append(
 		[]ContentItem{{Type: "text", Text: strings.Join(lines, "\n")}},
 		result.Content...,
 	)
 	return result
+}
+
+func (s *Service) actTypeEffectLine(trace *actReportTrace, index int, ref string) (string, bool) {
+	head := axReportEffectPrefix + "type"
+	beforeSnapshot := trace.before[index]
+	if beforeSnapshot == nil || beforeSnapshot.AXSnapshot == nil {
+		return head + " unknown (no read before the action)", false
+	}
+	if ref == "" {
+		var reason string
+		ref, reason = axReportTypeFocusRef(beforeSnapshot)
+		if reason != "" {
+			return head + " unknown (" + reason + ")", false
+		}
+	}
+	head += " " + ref
+	before := axSnapshotNodeByRef(beforeSnapshot, ref)
+	if before == nil {
+		return head + " unknown (the read before the action did not include it)", false
+	}
+	head += " " + axReportNodeLabel(before)
+	afterSnapshot := trace.after(s, index)
+	if afterSnapshot == nil {
+		reason := "no read after the action"
+		if trace.observe == contract.ObserveNone {
+			reason = `observe "none" skipped the read after the action`
+		}
+		return head + " unknown (" + reason + ")", false
+	}
+	if afterSnapshot.WindowHandle != beforeSnapshot.WindowHandle {
+		return head + " unknown (the read after the action is of " + axReportSnapshotWindow(afterSnapshot) + ")", false
+	}
+	after := axSnapshotNodeByRef(afterSnapshot, ref)
+	if after == nil {
+		return head + " unknown (the read after the action did not include it)", false
+	}
+	old, now := axReportTypeValue(before), axReportTypeValue(after)
+	if old == "" {
+		line := head + " unknown (value before the action is empty or unavailable)"
+		if now != "" {
+			line += "; value after=" + strconv.Quote(truncateRunes(now, 60))
+		}
+		return line, false
+	}
+	if now == "" {
+		return head + " unknown (value after the action is empty or unavailable)", false
+	}
+	if old == now {
+		return head + " no visible change (value unchanged; text input not verified)", false
+	}
+	from, to := strconv.Quote(truncateRunes(old, 60)), strconv.Quote(truncateRunes(now, 60))
+	if from == to {
+		return head + " value changed (difference beyond the displayed prefix)", true
+	}
+	return head + " value=" + from + "→" + to, true
+}
+
+func axReportTypeFocusRef(snapshot *AppSnapshot) (string, string) {
+	if !snapshot.AXSnapshot.RefInventoryComplete {
+		return "", "the read before the action is incomplete; focus uniqueness is unknown"
+	}
+	roots := snapshot.AXSnapshot.CanonicalRoots
+	if len(roots) == 0 {
+		roots = snapshot.AXSnapshot.Roots
+	}
+	var focused *AXNode
+	count := 0
+	var visit func([]*AXNode)
+	visit = func(nodes []*AXNode) {
+		for _, node := range nodes {
+			if node == nil {
+				continue
+			}
+			if node.States.Active == TriTrue {
+				focused = node
+				count++
+			}
+			visit(node.Children)
+		}
+	}
+	visit(roots)
+	if count != 1 || focused.Role != "textbox" || !focused.Capabilities.EditText {
+		return "", "no unique focused editable textbox in the read before the action"
+	}
+	if !isShortAXRef(focused.Ref) {
+		return "", "the focused editable textbox has no ref"
+	}
+	return focused.Ref, ""
+}
+
+func axReportTypeValue(node *AXNode) string {
+	if node.SourceRecord != nil {
+		return node.SourceRecord.Value
+	}
+	return node.Properties.Value
 }
 
 // actEffectLine compares one element between the reads around its action.
@@ -498,6 +635,27 @@ func axReportWindows(snapshot *AppSnapshot) []axReportWindow {
 // actWindowsLine compares the application's windows before the first action
 // with those after the last one.
 func (s *Service) actWindowsLine(trace *actReportTrace, result ToolCallResult) string {
+	windows := map[string]bool{}
+	indices := make([]int, 0, len(trace.stepWindows))
+	for index, ref := range trace.stepWindows {
+		windows[ref] = true
+		indices = append(indices, index)
+	}
+	if len(windows) > 1 {
+		sort.Ints(indices)
+		steps := make([]string, 0, len(indices))
+		for _, index := range indices {
+			steps = append(steps, strconv.Itoa(index+1)+"="+trace.stepWindows[index])
+		}
+		final := trace.windowRef
+		if ref, ok := result.StructuredContent["final_observation_window_ref"].(string); ok && ref != "" {
+			final = ref
+		} else if snapshot := s.currentSnapshot(trace.appToken); snapshot != nil && snapshot.publicWindowRef != "" &&
+			result.StructuredContent["final_observation_returned"] == true {
+			final = snapshot.publicWindowRef
+		}
+		return axReportWindowsPrefix + "step targets " + strings.Join(steps, ", ") + "; final " + final
+	}
 	closedBound := result.StructuredContent["target_window_absent"] == true ||
 		result.StructuredContent["close_effect_verified"] == true
 	final := s.currentSnapshot(trace.appToken)

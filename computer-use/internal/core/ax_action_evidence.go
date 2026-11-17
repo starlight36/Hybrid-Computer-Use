@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/microsoft/Hybrid-Computer-Use/computer-use/internal/contract"
 )
 
 func unchangedNotes(windowFocusConfirmed bool, pixels pixelVerdict, attrsChanged bool) []string {
@@ -328,7 +330,8 @@ func observeNoneNotes(notes []string) []string {
 		if phase == "immediate" && category != "" {
 			continue
 		}
-		if strings.HasPrefix(note, "[expect]") ||
+		if strings.HasPrefix(note, "[a11y][synthesis]") ||
+			strings.HasPrefix(note, "[expect]") ||
 			strings.HasPrefix(note, "[semantic-resolution]") ||
 			strings.HasPrefix(note, "[canonical-address]") ||
 			strings.Contains(note, `"predicate_verified":`) ||
@@ -349,8 +352,13 @@ func observeNoneNotes(notes []string) []string {
 func modelFacingAXNotes(notes []string) []string {
 	out := make([]string, 0, len(notes))
 	seen := map[string]bool{}
+	withoutChanges := contract.Ablated(contract.AblateDiff)
 	appendOnce := func(value string) {
-		if value == "" || seen[value] {
+		if withoutChanges && value == "[state] semantic_state=unchanged busy=true recovery=wait_then_observe" {
+			// The app's busy state is current state, not a change.
+			value = "[state] busy=true recovery=wait_then_observe"
+		}
+		if value == "" || seen[value] || (withoutChanges && axChangeNote(value)) {
 			return
 		}
 		seen[value] = true
@@ -402,6 +410,10 @@ func modelFacingAXNotes(notes []string) []string {
 			} else {
 				appendOnce("[state] visual_change=true")
 			}
+			continue
+		}
+		if strings.HasPrefix(note, "[a11y][synthesis]") {
+			appendOnce(note)
 			continue
 		}
 		if strings.HasPrefix(note, "[a11y]") {
