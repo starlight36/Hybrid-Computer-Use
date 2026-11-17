@@ -89,7 +89,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            --verify-tag --prerelease \
+            --verify-tag \
             --title "$GITHUB_REF_NAME" --notes-from-tag \
             "dist/hcu-$GITHUB_REF_NAME-linux-amd64.tar.gz" \
             "dist/hcu-$GITHUB_REF_NAME-linux-arm64.tar.gz"

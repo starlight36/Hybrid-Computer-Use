@@ -85,8 +85,9 @@ With Go and the build dependencies installed, run
 `scripts/package-linux.sh artifacts` on either architecture to build locally.
 For a ClawSphere release, set `VERSION` to
 `<upstream-version>-clawsphere-<revision>` and push an annotated tag with the
-same value from the maintenance branch. The workflow publishes a GitHub
-prerelease with both verified packages and uses the tag annotation as its notes.
+same value from the maintenance branch. The workflow publishes a regular
+GitHub release with both verified packages and uses the tag annotation as its
+notes.
 Python source installs represent the same version as
 `<upstream-version>+clawsphere.<revision>` in package metadata.
 
